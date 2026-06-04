@@ -246,15 +246,22 @@ def build_audio_sse_response(
 
                 send_task = asyncio.create_task(send_audio_with_end_marker())
                 should_emit_done = True
+                received_result = False
                 while True:
                     try:
                         timeout = 1.0 if end_sent.is_set() and mode == "online" else None
                         event, data = await asyncio.wait_for(queue.get(), timeout=timeout)
                     except asyncio.TimeoutError:
                         break
-                    if end_sent.is_set() and mode == "online" and event == "error":
-                        if "no close frame" in data.get("message", ""):
-                            break
+                    if event in {"online", "final", "message"}:
+                        received_result = True
+                    if (
+                        end_sent.is_set()
+                        and received_result
+                        and event == "error"
+                        and "no close frame" in data.get("message", "")
+                    ):
+                        break
                     yield sse_event(event, data)
                     if event == "done":
                         should_emit_done = False
