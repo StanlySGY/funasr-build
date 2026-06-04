@@ -40,7 +40,7 @@ services:
       - "4"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python3", "-c", "import socket,sys; s=socket.create_connection(('127.0.0.1',10095),2); s.close()"]
+      test: ["CMD", "python3", "-c", "import asyncio,websockets; loop=asyncio.get_event_loop(); ws=loop.run_until_complete(websockets.connect('ws://127.0.0.1:10095', subprotocols=['binary'], ping_interval=None)); loop.run_until_complete(ws.close())"]
       interval: 30s
       timeout: 5s
       retries: 3
