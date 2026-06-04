@@ -504,21 +504,21 @@ async def async_asr_online(websocket, audio_in):
 
 
 async def main():
+    ssl_context = None
     if len(args.certfile) > 0:
         ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ssl_cert = args.certfile
-        ssl_key = args.keyfile
-        ssl_context.load_cert_chain(ssl_cert, keyfile=ssl_key)
-        start_server = websockets.serve(
-            ws_serve, args.host, args.port, subprotocols=None, ping_interval=None, ssl=ssl_context
-        )
-    else:
-        start_server = websockets.serve(
-            ws_serve, args.host, args.port, subprotocols=None, ping_interval=None
-        )
-    print(f"服务已启动，监听地址: ws://{args.host}:{args.port}", flush=True)
-    await start_server
-    await asyncio.get_event_loop().create_future() # 永久运行
+        ssl_context.load_cert_chain(args.certfile, keyfile=args.keyfile)
+
+    async with websockets.serve(
+        ws_serve,
+        args.host,
+        args.port,
+        subprotocols=None,
+        ping_interval=None,
+        ssl=ssl_context,
+    ):
+        print(f"服务已启动，监听地址: ws://{args.host}:{args.port}", flush=True)
+        await asyncio.Future()
 
 
 if __name__ == "__main__":
