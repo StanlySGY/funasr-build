@@ -16,6 +16,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 DEFAULT_BACKEND = os.environ.get("FUNASR_BACKEND_WS", "ws://127.0.0.1:10095")
+DEFAULT_BACKEND_CONNECT_RETRIES = int(os.environ.get("FUNASR_BACKEND_CONNECT_RETRIES", "30"))
+DEFAULT_BACKEND_CONNECT_DELAY = float(os.environ.get("FUNASR_BACKEND_CONNECT_DELAY", "1"))
 DEFAULT_CHUNK_SIZE = [5, 10, 5]
 DEFAULT_CHUNK_INTERVAL = 10
 
@@ -135,6 +137,21 @@ def event_name(message: dict) -> str:
     return "message"
 
 
+async def connect_backend():
+    last_error = None
+    for attempt in range(1, DEFAULT_BACKEND_CONNECT_RETRIES + 1):
+        try:
+            return await websockets.connect(backend_ws, subprotocols=["binary"], ping_interval=None)
+        except OSError as exc:
+            last_error = exc
+            if attempt >= DEFAULT_BACKEND_CONNECT_RETRIES:
+                break
+            await asyncio.sleep(DEFAULT_BACKEND_CONNECT_DELAY)
+    raise RuntimeError(
+        f"FunASR backend is not ready after {DEFAULT_BACKEND_CONNECT_RETRIES} attempts: {last_error}"
+    )
+
+
 async def receive_to_queue(ws, queue: asyncio.Queue) -> None:
     try:
         async for response in ws:
@@ -187,7 +204,7 @@ def build_audio_sse_response(
     async def events():
         queue: asyncio.Queue = asyncio.Queue()
         try:
-            async with websockets.connect(backend_ws, subprotocols=["binary"], ping_interval=None) as ws:
+            async with await connect_backend() as ws:
                 await ws.send(
                     build_init_message(
                         mode=mode,
@@ -290,7 +307,7 @@ async def create_session(
 ):
     session_id = uuid.uuid4().hex
     chunks = parse_chunk_size(chunk_size)
-    ws = await websockets.connect(backend_ws, subprotocols=["binary"], ping_interval=None)
+    ws = await connect_backend()
     await ws.send(
         build_init_message(
             mode=mode,
