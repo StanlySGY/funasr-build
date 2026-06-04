@@ -18,7 +18,7 @@ Fun-ASR-Nano-2512-Deploy/.git/
 FunASR-src/.git/
 
 # Model/checkpoint artifacts
-models/
+/models/
 *.bin
 *.onnx
 *.pt
