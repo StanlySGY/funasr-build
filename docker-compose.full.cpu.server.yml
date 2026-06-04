@@ -54,6 +54,7 @@ services:
       - HOST=0.0.0.0
       - PORT=10098
       - FUNASR_BACKEND_WS=ws://127.0.0.1:10095
+      - FUNASR_TARGET_SAMPLE_RATE=16000
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:10098/health',timeout=2).status==200 else 1)"]

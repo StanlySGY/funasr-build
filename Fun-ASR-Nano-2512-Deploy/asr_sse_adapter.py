@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import audioop
 import base64
 import binascii
 import json
@@ -18,6 +19,7 @@ from pydantic import BaseModel
 DEFAULT_BACKEND = os.environ.get("FUNASR_BACKEND_WS", "ws://127.0.0.1:10095")
 DEFAULT_BACKEND_CONNECT_RETRIES = int(os.environ.get("FUNASR_BACKEND_CONNECT_RETRIES", "30"))
 DEFAULT_BACKEND_CONNECT_DELAY = float(os.environ.get("FUNASR_BACKEND_CONNECT_DELAY", "1"))
+TARGET_SAMPLE_RATE = int(os.environ.get("FUNASR_TARGET_SAMPLE_RATE", "16000"))
 DEFAULT_CHUNK_SIZE = [5, 10, 5]
 DEFAULT_CHUNK_INTERVAL = 10
 
@@ -75,6 +77,13 @@ def decode_audio_base64(audio_base64: str) -> bytes:
     return data
 
 
+def normalize_sample_rate(pcm_data: bytes, sample_rate: int) -> tuple[bytes, int]:
+    if sample_rate == TARGET_SAMPLE_RATE:
+        return pcm_data, sample_rate
+    converted, _ = audioop.ratecv(pcm_data, 2, 1, sample_rate, TARGET_SAMPLE_RATE, None)
+    return converted, TARGET_SAMPLE_RATE
+
+
 def read_audio_payload(filename: str, data: bytes, audio_fs: int) -> tuple[bytes, int]:
     if filename.lower().endswith(".wav"):
         import io
@@ -88,8 +97,8 @@ def read_audio_payload(filename: str, data: bytes, audio_fs: int) -> tuple[bytes
                     status_code=400,
                     detail="WAV must be 16-bit mono PCM. Convert with: ffmpeg -i input.wav -ar 16000 -ac 1 -sample_fmt s16 output.wav",
                 )
-            return wav_file.readframes(wav_file.getnframes()), sample_rate
-    return data, audio_fs
+            return normalize_sample_rate(wav_file.readframes(wav_file.getnframes()), sample_rate)
+    return normalize_sample_rate(data, audio_fs)
 
 
 def build_init_message(
