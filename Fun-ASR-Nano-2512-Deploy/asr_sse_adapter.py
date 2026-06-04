@@ -45,7 +45,7 @@ class AsrSession:
 class Base64AsrRequest(BaseModel):
     audio_base64: str
     filename: str = "audio.pcm"
-    mode: str = "2pass"
+    mode: str = "online"
     audio_fs: int = 16000
     chunk_size: str | list[int] = "5,10,5"
     chunk_interval: int = DEFAULT_CHUNK_INTERVAL
@@ -247,7 +247,14 @@ def build_audio_sse_response(
                 send_task = asyncio.create_task(send_audio_with_end_marker())
                 should_emit_done = True
                 while True:
-                    event, data = await queue.get()
+                    try:
+                        timeout = 1.0 if end_sent.is_set() and mode == "online" else None
+                        event, data = await asyncio.wait_for(queue.get(), timeout=timeout)
+                    except asyncio.TimeoutError:
+                        break
+                    if end_sent.is_set() and mode == "online" and event == "error":
+                        if "no close frame" in data.get("message", ""):
+                            break
                     yield sse_event(event, data)
                     if event == "done":
                         should_emit_done = False
@@ -268,7 +275,7 @@ def build_audio_sse_response(
 @app.post("/asr/file-sse")
 async def asr_file_sse(
     file: UploadFile = File(...),
-    mode: str = Form("2pass"),
+    mode: str = Form("online"),
     audio_fs: int = Form(16000),
     chunk_size: str = Form("5,10,5"),
     chunk_interval: int = Form(DEFAULT_CHUNK_INTERVAL),
@@ -306,7 +313,7 @@ async def asr_base64_sse(request: Base64AsrRequest):
 
 @app.post("/asr/session")
 async def create_session(
-    mode: str = Form("2pass"),
+    mode: str = Form("online"),
     audio_fs: int = Form(16000),
     chunk_size: str = Form("5,10,5"),
     chunk_interval: int = Form(DEFAULT_CHUNK_INTERVAL),

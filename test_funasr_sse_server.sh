@@ -3,7 +3,7 @@ set -euo pipefail
 
 SERVER_URL="${1:-http://172.16.100.26:10098}"
 AUDIO_FILE="${2:-Fun-ASR-Nano-2512-Deploy/example.wav}"
-MODE="${MODE:-2pass}"
+MODE="${MODE:-online}"
 
 if [[ ! -f "${AUDIO_FILE}" ]]; then
   echo "Audio file not found: ${AUDIO_FILE}" >&2

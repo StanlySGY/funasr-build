@@ -274,12 +274,6 @@ async def ws_serve(websocket, path=None):
                         websocket.status_dict_asr["hotword"] = messagejson["hotwords"]
                     if "mode" in messagejson:
                         websocket.mode = messagejson["mode"]
-                        # 兼容 Java 客户端:
-                        # Java 客户端请求 "online" 模式，但代码逻辑依赖 "is_final": True 才能结束等待。
-                        # 而 "is_final": True 是由离线识别 (async_asr) 步骤产生的。
-                        # 因此，这里强制将模式升级为 "2pass" (2pass = online流式 + offline离线修正)，确保流程完整。
-                        if websocket.mode == "online":
-                            websocket.mode = "2pass"
                 except Exception as e:
                     print("JSON error:", e)
 
