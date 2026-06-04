@@ -1,0 +1,16 @@
+.git/
+.gitignore
+
+Fun-ASR-Nano-2512-Deploy/venv/
+Fun-ASR-Nano-2512-Deploy/models/
+Fun-ASR-Nano-2512-Deploy/asr_logs/
+Fun-ASR-Nano-2512-Deploy/__pycache__/
+
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.log
+**/*.wav
+**/*.pcm
+**/*.mp3
+**/*.Zone.Identifier

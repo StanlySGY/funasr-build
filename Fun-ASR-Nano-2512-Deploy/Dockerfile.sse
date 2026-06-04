@@ -1,0 +1,17 @@
+FROM python:3.11-slim-bookworm
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /app
+
+COPY requirements.sse.txt /app/requirements.sse.txt
+RUN pip install --no-cache-dir -r /app/requirements.sse.txt
+
+COPY asr_sse_adapter.py /app/asr_sse_adapter.py
+COPY start_sse_adapter.sh /app/start_sse_adapter.sh
+
+RUN chmod +x /app/start_sse_adapter.sh
+
+EXPOSE 10097
+
+CMD ["/app/start_sse_adapter.sh"]

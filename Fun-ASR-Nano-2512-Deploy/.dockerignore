@@ -1,0 +1,11 @@
+venv/
+models/
+asr_logs/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+*.wav
+*.pcm
+*.mp3
+*.Zone.Identifier

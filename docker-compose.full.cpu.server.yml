@@ -1,0 +1,67 @@
+services:
+  funasr-ws:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+    image: funasr-ws-cpu:latest
+    container_name: funasr-ws
+    network_mode: host
+    environment:
+      - TZ=Asia/Shanghai
+      - PORT=10095
+      - DEVICE=cpu
+      - NGPU=0
+      - NCPU=4
+      - MODEL_PATH=/app/funasr-deploy/models/hub/models/FunAudioLLM/Fun-ASR-Nano-2512
+      - MODELSCOPE_CACHE=/app/funasr-deploy/models
+    volumes:
+      - /data/maas/sgy_arm/fun-asr-nano/models:/app/funasr-deploy/models
+      - ./Fun-ASR-Nano-2512-Deploy/asr_logs:/app/funasr-deploy/asr_logs
+    command:
+      - python3
+      - funasr_wss_server.py
+      - --host
+      - 127.0.0.1
+      - --port
+      - "10095"
+      - --asr_model
+      - /app/funasr-deploy/models/hub/models/FunAudioLLM/Fun-ASR-Nano-2512
+      - --asr_model_online
+      - /app/funasr-deploy/models/hub/models/FunAudioLLM/Fun-ASR-Nano-2512
+      - --vad_model
+      - /app/funasr-deploy/models/hub/models/iic/speech_fsmn_vad_zh-cn-16k-common-pytorch
+      - --punc_model
+      - /app/funasr-deploy/models/hub/models/iic/punc_ct-transformer_zh-cn-common-vad_realtime-vocab272727
+      - --device
+      - cpu
+      - --ngpu
+      - "0"
+      - --ncpu
+      - "4"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket,sys; s=socket.create_connection(('127.0.0.1',10095),2); s.close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  funasr-sse-adapter:
+    build:
+      context: ./Fun-ASR-Nano-2512-Deploy
+      dockerfile: Dockerfile.sse
+    image: funasr-sse-adapter:latest
+    container_name: funasr-sse-adapter
+    network_mode: host
+    depends_on:
+      - funasr-ws
+    environment:
+      - TZ=Asia/Shanghai
+      - HOST=0.0.0.0
+      - PORT=10098
+      - FUNASR_BACKEND_WS=ws://127.0.0.1:10095
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:10098/health',timeout=2).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

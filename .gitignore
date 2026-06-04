@@ -1,0 +1,26 @@
+.ace-tool/
+
+# Python/runtime caches
+__pycache__/
+*.py[cod]
+*.log
+.DS_Store
+*:Zone.Identifier
+
+# Runtime outputs
+Fun-ASR-Nano-2512-Deploy/asr_logs/
+Fun-ASR-Nano-2512-Deploy/models/
+Fun-ASR-Nano-2512-Deploy/.lock/
+Fun-ASR-Nano-2512-Deploy/._____temp/
+
+# Nested source checkout metadata; commit source files in parent repo, not nested history.
+Fun-ASR-Nano-2512-Deploy/.git/
+FunASR-src/.git/
+
+# Model/checkpoint artifacts
+models/
+*.bin
+*.onnx
+*.pt
+*.pth
+*.safetensors

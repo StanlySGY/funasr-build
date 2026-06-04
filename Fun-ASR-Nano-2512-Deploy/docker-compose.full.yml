@@ -1,0 +1,36 @@
+services:
+  funasr-ws:
+    build:
+      context: .
+      dockerfile: Dockerfile.ws
+    image: funasr-ws:latest
+    container_name: funasr-ws
+    gpus: all
+    ports:
+      - "127.0.0.1:10095:10095"
+    environment:
+      - TZ=Asia/Shanghai
+      - PORT=10095
+      - DEVICE=cuda
+      - MODEL_PATH=/app/funasr-deploy/models/FunAudioLLM/Fun-ASR-Nano-2512
+    volumes:
+      - ./models:/app/funasr-deploy/models
+      - ./asr_logs:/app/funasr-deploy/asr_logs
+    restart: unless-stopped
+
+  funasr-sse-adapter:
+    build:
+      context: .
+      dockerfile: Dockerfile.sse
+    image: funasr-sse-adapter:latest
+    container_name: funasr-sse-adapter
+    depends_on:
+      - funasr-ws
+    ports:
+      - "10097:10097"
+    environment:
+      - TZ=Asia/Shanghai
+      - HOST=0.0.0.0
+      - PORT=10097
+      - FUNASR_BACKEND_WS=ws://funasr-ws:10095
+    restart: unless-stopped

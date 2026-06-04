@@ -1,0 +1,16 @@
+services:
+  funasr-sse-adapter:
+    build:
+      context: .
+      dockerfile: Dockerfile.sse
+    container_name: funasr-sse-adapter
+    ports:
+      - "10097:10097"
+    environment:
+      - TZ=Asia/Shanghai
+      - HOST=0.0.0.0
+      - PORT=10097
+      - FUNASR_BACKEND_WS=ws://host.docker.internal:10095
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
