@@ -14,7 +14,7 @@ from typing import Any
 import uvicorn
 import websockets
 from fastapi import FastAPI, File, Form, HTTPException, Path, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 DEFAULT_BACKEND = os.environ.get("FUNASR_BACKEND_WS", "ws://127.0.0.1:10095")
@@ -221,6 +221,16 @@ async def cleanup_session(session_id: str) -> None:
         await session.websocket.close()
     except Exception:
         pass
+
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+async def frontend_index():
+    index_path = os.path.join(os.path.dirname(__file__), "static", "index.html")
+    try:
+        with open(index_path, encoding="utf-8") as index_file:
+            return index_file.read()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Frontend page not found") from exc
 
 
 @app.get("/health", summary="健康检查", description="检查 SSE 适配器是否启动，并返回当前后端 WebSocket 地址和会话数量。")

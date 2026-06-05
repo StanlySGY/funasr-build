@@ -1,0 +1,1170 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FunASR SSE 控制台</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f8fc;
+      --surface: #ffffff;
+      --surface-soft: #f9fbff;
+      --sidebar: #182033;
+      --sidebar-soft: #222b43;
+      --primary: #4f46e5;
+      --primary-strong: #4338ca;
+      --primary-soft: #eef2ff;
+      --primary-line: #c7d2fe;
+      --success: #059669;
+      --success-soft: #ecfdf5;
+      --warning: #c2410c;
+      --warning-soft: #fff7ed;
+      --danger: #e11d48;
+      --danger-soft: #fff1f2;
+      --text: #0f172a;
+      --muted: #667085;
+      --line: #e5e7eb;
+      --shadow: 0 18px 48px rgba(15, 23, 42, 0.07);
+      --shadow-soft: 0 8px 26px rgba(15, 23, 42, 0.05);
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 18% 0%, rgba(79, 70, 229, 0.12), transparent 30%),
+        radial-gradient(circle at 100% 20%, rgba(14, 165, 233, 0.09), transparent 28%),
+        linear-gradient(180deg, #fbfdff 0%, var(--bg) 34%, #f2f5fb 100%);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    button, input, select, textarea {
+      font: inherit;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: clamp(232px, 15vw, 288px) minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: clamp(20px, 1.6vw, 28px) clamp(14px, 1.2vw, 20px);
+      background:
+        radial-gradient(circle at 20% 0%, rgba(99, 102, 241, 0.28), transparent 32%),
+        linear-gradient(180deg, var(--sidebar) 0%, #101728 100%);
+      color: #e5e7eb;
+      display: flex;
+      flex-direction: column;
+      gap: clamp(18px, 1.4vw, 26px);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 8px 16px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .brand-mark {
+      width: 42px;
+      height: 42px;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, #818cf8, #4f46e5 58%, #2563eb);
+      color: white;
+      font-weight: 900;
+      letter-spacing: -0.04em;
+      box-shadow: 0 14px 28px rgba(37, 99, 235, 0.3);
+    }
+
+    .brand-title {
+      font-size: 15px;
+      font-weight: 800;
+      line-height: 1.2;
+    }
+
+    .brand-subtitle {
+      display: block;
+      color: #94a3b8;
+      font-size: 12px;
+      font-weight: 500;
+      margin-top: 3px;
+    }
+
+    .nav-group {
+      display: grid;
+      gap: 8px;
+    }
+
+    .nav-label {
+      padding: 0 10px;
+      color: #94a3b8;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .nav-item {
+      border: 0;
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 13px;
+      border-radius: 14px;
+      background: transparent;
+      color: #cbd5e1;
+      cursor: pointer;
+      text-align: left;
+      transition: background 160ms ease, color 160ms ease, transform 160ms ease;
+    }
+
+    .nav-item:hover {
+      background: rgba(255,255,255,0.07);
+      color: #fff;
+      transform: translateX(1px);
+    }
+
+    .nav-item.active {
+      background: rgba(255, 255, 255, 0.96);
+      color: #182033;
+      box-shadow: 0 14px 28px rgba(0,0,0,0.16);
+    }
+
+    .nav-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: currentColor;
+      opacity: 0.75;
+    }
+
+    .sidebar-footer {
+      margin-top: auto;
+      padding: 16px;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 16px;
+      background: rgba(255,255,255,0.06);
+      color: #cbd5e1;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .main {
+      width: min(100%, 1760px);
+      margin: 0 auto;
+      padding: clamp(24px, 2.4vw, 42px);
+      min-width: 0;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: clamp(20px, 1.8vw, 30px);
+    }
+
+    .page-title h1 {
+      margin: 0;
+      font-size: clamp(28px, 2.1vw, 38px);
+      letter-spacing: -0.04em;
+    }
+
+    .page-title p {
+      margin: 9px 0 0;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .btn {
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--text);
+      border-radius: 12px;
+      padding: 10px 15px;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease, background 160ms ease;
+    }
+
+    .btn:hover:not(:disabled) {
+      transform: translateY(-1px);
+      border-color: #a5b4fc;
+      box-shadow: 0 12px 24px rgba(79, 70, 229, 0.13);
+    }
+
+    .btn.primary {
+      color: #fff;
+      background: linear-gradient(135deg, #6366f1, var(--primary-strong));
+      border-color: var(--primary-strong);
+    }
+
+    .btn.secondary {
+      background: var(--primary-soft);
+      border-color: var(--primary-line);
+      color: var(--primary-strong);
+    }
+
+    .btn.warning {
+      background: var(--warning-soft);
+      border-color: #fed7aa;
+      color: #b45309;
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: clamp(16px, 1.4vw, 24px);
+      margin-bottom: clamp(20px, 1.8vw, 30px);
+    }
+
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-soft);
+      padding: clamp(18px, 1.5vw, 24px);
+      min-height: 116px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .stat-card::after {
+      content: "";
+      position: absolute;
+      inset: auto -28px -42px auto;
+      width: 120px;
+      height: 120px;
+      border-radius: 999px;
+      background: rgba(79, 70, 229, 0.07);
+    }
+
+    .stat-label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .stat-value {
+      display: block;
+      margin-top: 12px;
+      font-size: clamp(17px, 1.25vw, 22px);
+      font-weight: 850;
+      word-break: break-all;
+      position: relative;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      width: fit-content;
+      align-items: center;
+      gap: 7px;
+      padding: 6px 9px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+      background: var(--warning-soft);
+      color: var(--warning);
+    }
+
+    .status-pill.ok {
+      background: var(--success-soft);
+      color: var(--success);
+    }
+
+    .status-pill.error {
+      background: var(--danger-soft);
+      color: var(--danger);
+    }
+
+    .content-grid {
+      display: grid;
+      grid-template-columns: minmax(500px, 0.88fr) minmax(560px, 1.12fr);
+      gap: clamp(20px, 1.8vw, 30px);
+      align-items: start;
+    }
+
+    .panel {
+      background: rgba(255,255,255,0.92);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .panel-head {
+      padding: clamp(20px, 1.6vw, 26px);
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #fff, #fbfcff);
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+    }
+
+    .panel-title {
+      margin: 0;
+      font-size: 17px;
+      font-weight: 850;
+    }
+
+    .panel-desc {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .panel-body {
+      padding: clamp(20px, 1.7vw, 28px);
+    }
+
+    .mode-switch {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      padding: 6px;
+      background: var(--surface-soft);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      margin-bottom: 22px;
+    }
+
+    .mode-switch button {
+      border: 0;
+      border-radius: 13px;
+      background: transparent;
+      color: var(--muted);
+      padding: 12px 10px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    .mode-switch button.active {
+      background: var(--surface);
+      color: var(--primary);
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+    }
+
+    .pane { display: none; }
+    .pane.active { display: block; }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .field {
+      display: grid;
+      gap: 8px;
+    }
+
+    .field.full { grid-column: 1 / -1; }
+
+    label {
+      color: #344054;
+      font-size: 13px;
+      font-weight: 780;
+    }
+
+    input, select, textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: #fff;
+      color: var(--text);
+      padding: 11px 13px;
+      outline: none;
+      transition: border-color 160ms ease, box-shadow 160ms ease;
+    }
+
+    input[type="file"] {
+      background: var(--surface-soft);
+    }
+
+    textarea {
+      min-height: 84px;
+      resize: vertical;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      border-color: #a5b4fc;
+      box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.11);
+    }
+
+    .helper {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .callout {
+      border: 1px solid var(--primary-line);
+      background: var(--primary-soft);
+      color: #3730a3;
+      border-radius: 16px;
+      padding: 14px 15px;
+      line-height: 1.6;
+      font-size: 13px;
+      margin-bottom: 18px;
+    }
+
+    .actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 20px;
+    }
+
+    .result-grid {
+      display: grid;
+      grid-template-rows: auto minmax(380px, 1fr);
+      gap: clamp(18px, 1.5vw, 24px);
+    }
+
+    .transcript {
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 20px;
+      padding: clamp(18px, 1.5vw, 24px);
+      box-shadow: var(--shadow-soft);
+    }
+
+    .transcript-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+
+    .transcript-title {
+      font-weight: 850;
+    }
+
+    .transcript-body {
+      min-height: 96px;
+      color: #1e293b;
+      line-height: 1.8;
+      white-space: pre-wrap;
+    }
+
+    .event-stream {
+      background: linear-gradient(180deg, #121a2d, #0b1020);
+      color: #dbeafe;
+      border-radius: 20px;
+      padding: clamp(16px, 1.4vw, 22px);
+      height: clamp(440px, 58vh, 690px);
+      overflow: auto;
+      border: 1px solid rgba(99, 102, 241, 0.24);
+    }
+
+    .event-item {
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      background: rgba(15, 23, 42, 0.72);
+      border-radius: 15px;
+      padding: 13px;
+      margin-bottom: 12px;
+    }
+
+    .event-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+      font-size: 12px;
+      color: #93c5fd;
+      font-weight: 800;
+    }
+
+    .event-item.error .event-meta { color: #fca5a5; }
+    .event-item.done .event-meta { color: #86efac; }
+
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 12px;
+      line-height: 1.6;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    .request-preview {
+      margin-top: 14px;
+      border: 1px dashed var(--line);
+      background: var(--surface-soft);
+      border-radius: 14px;
+      padding: 12px;
+    }
+
+    .request-preview summary {
+      cursor: pointer;
+      color: #334155;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .request-preview pre {
+      margin-top: 10px;
+      color: #334155;
+    }
+
+    .kbd {
+      display: inline-flex;
+      border-radius: 7px;
+      border: 1px solid var(--line);
+      background: #fff;
+      padding: 2px 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      color: #475569;
+    }
+
+    @media (min-width: 1680px) {
+      .content-grid {
+        grid-template-columns: minmax(540px, 0.78fr) minmax(720px, 1.22fr);
+      }
+    }
+
+    @media (max-width: 1420px) {
+      .content-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .result-grid {
+        grid-template-columns: minmax(340px, 0.8fr) minmax(460px, 1.2fr);
+        grid-template-rows: auto;
+        align-items: stretch;
+      }
+
+      .event-stream {
+        height: clamp(420px, 52vh, 620px);
+      }
+    }
+
+    @media (max-width: 1120px) {
+      .layout { grid-template-columns: 1fr; }
+      .sidebar {
+        position: static;
+        height: auto;
+        border-radius: 0 0 22px 22px;
+      }
+      .sidebar-footer { margin-top: 0; }
+      .nav-group { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .content-grid { grid-template-columns: 1fr; }
+      .result-grid { grid-template-columns: 1fr; }
+      .stats { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    @media (max-width: 720px) {
+      .main { padding: 16px; }
+      .topbar { align-items: flex-start; flex-direction: column; }
+      .stats, .form-grid, .nav-group { grid-template-columns: 1fr; }
+      .mode-switch { grid-template-columns: 1fr; }
+      .event-stream { height: 420px; }
+      .transcript-head { align-items: flex-start; flex-direction: column; }
+      .top-actions, .actions { width: 100%; }
+      .top-actions .btn, .actions .btn { flex: 1; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">ASR</div>
+        <div>
+          <div class="brand-title">FunASR 控制台</div>
+          <span class="brand-subtitle">SSE Adapter Workbench</span>
+        </div>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-label">测试功能</div>
+        <button class="nav-item active" type="button" data-pane="filePane"><span class="nav-dot"></span>文件识别</button>
+        <button class="nav-item" type="button" data-pane="base64Pane"><span class="nav-dot"></span>完整 Base64</button>
+        <button class="nav-item" type="button" data-pane="streamPane"><span class="nav-dot"></span>实时分片流</button>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-label">快捷入口</div>
+        <a class="nav-item" href="/docs" target="_blank" rel="noreferrer"><span class="nav-dot"></span>接口文档</a>
+        <a class="nav-item" href="/health" target="_blank" rel="noreferrer"><span class="nav-dot"></span>健康检查</a>
+      </div>
+
+      <div class="sidebar-footer">
+        建议先使用 <span class="kbd">文件识别</span> 验证服务，再使用 <span class="kbd">实时分片流</span> 模拟业务方实时推送 Base64 音频片段。
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="page-title">
+          <h1>语音识别测试台</h1>
+          <p>在浏览器里直接调试文件流、完整 Base64、实时 Base64 分片流。</p>
+        </div>
+        <div class="top-actions">
+          <button id="healthBtn" class="btn secondary" type="button">刷新状态</button>
+          <button id="clearBtn" class="btn" type="button">清空事件</button>
+        </div>
+      </header>
+
+      <section class="stats">
+        <div class="stat-card">
+          <span class="stat-label">服务状态</span>
+          <strong id="serviceStatus" class="status-pill">待检查</strong>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">HTTP 地址</span>
+          <strong id="apiBase" class="stat-value">-</strong>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">后端 WebSocket</span>
+          <strong id="backendWs" class="stat-value">-</strong>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">会话数量</span>
+          <strong id="sessionCount" class="stat-value">0</strong>
+        </div>
+      </section>
+
+      <section class="content-grid">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2 class="panel-title">请求配置</h2>
+              <p class="panel-desc">参数保持和后端接口一致，普通测试一般只需要选择文件和模式。</p>
+            </div>
+          </div>
+
+          <div class="panel-body">
+            <div class="mode-switch">
+              <button class="mode-btn active" type="button" data-pane="filePane">文件</button>
+              <button class="mode-btn" type="button" data-pane="base64Pane">Base64</button>
+              <button class="mode-btn" type="button" data-pane="streamPane">实时流</button>
+            </div>
+
+            <section id="filePane" class="pane active">
+              <div class="callout">调用 <strong>POST /asr/file-sse</strong>，上传完整音频文件，直接消费 SSE 返回。</div>
+              <div class="form-grid">
+                <div class="field full">
+                  <label for="fileInput">音频文件</label>
+                  <input id="fileInput" type="file" accept="audio/*,.wav,.pcm" />
+                </div>
+                <div class="field">
+                  <label for="fileMode">识别模式</label>
+                  <select id="fileMode">
+                    <option value="online">online</option>
+                    <option value="2pass">2pass</option>
+                    <option value="offline">offline</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="fileAudioFs">PCM 采样率</label>
+                  <input id="fileAudioFs" type="number" value="16000" min="8000" step="1000" />
+                </div>
+                <div class="field full">
+                  <label for="fileHotwords">热词</label>
+                  <input id="fileHotwords" placeholder="没有热词可留空" />
+                </div>
+              </div>
+              <details class="request-preview">
+                <summary>请求说明</summary>
+                <pre>FormData: file, mode, audio_fs, chunk_size, chunk_interval, encoder_chunk_look_back, decoder_chunk_look_back, hotwords</pre>
+              </details>
+              <div class="actions">
+                <button id="fileRun" class="btn primary" type="button">开始识别</button>
+              </div>
+            </section>
+
+            <section id="base64Pane" class="pane">
+              <div class="callout">调用 <strong>POST /asr/base64-sse</strong>，页面会把文件转成 Base64 后用 JSON 提交。</div>
+              <div class="form-grid">
+                <div class="field full">
+                  <label for="base64File">音频文件</label>
+                  <input id="base64File" type="file" accept="audio/*,.wav,.pcm" />
+                </div>
+                <div class="field">
+                  <label for="base64Mode">识别模式</label>
+                  <select id="base64Mode">
+                    <option value="online">online</option>
+                    <option value="2pass">2pass</option>
+                    <option value="offline">offline</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="base64AudioFs">PCM 采样率</label>
+                  <input id="base64AudioFs" type="number" value="16000" min="8000" step="1000" />
+                </div>
+                <div class="field full">
+                  <label for="base64Hotwords">热词</label>
+                  <input id="base64Hotwords" placeholder="没有热词可留空" />
+                </div>
+              </div>
+              <details class="request-preview">
+                <summary>请求说明</summary>
+                <pre>JSON: audio_base64, filename, mode, audio_fs, chunk_size, chunk_interval, encoder_chunk_look_back, decoder_chunk_look_back, hotwords</pre>
+              </details>
+              <div class="actions">
+                <button id="base64Run" class="btn primary" type="button">提交 Base64</button>
+              </div>
+            </section>
+
+            <section id="streamPane" class="pane">
+              <div class="callout">模拟实时流：创建会话，打开 SSE，再把音频转为 16k PCM16 后按片段 Base64 推送。</div>
+              <div class="form-grid">
+                <div class="field full">
+                  <label for="streamFile">模拟实时流的音频文件</label>
+                  <input id="streamFile" type="file" accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.webm" />
+                </div>
+                <div class="field">
+                  <label for="streamMode">识别模式</label>
+                  <select id="streamMode">
+                    <option value="online">online</option>
+                    <option value="2pass">2pass</option>
+                    <option value="offline">offline</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="chunkMs">分片时长</label>
+                  <input id="chunkMs" type="number" value="300" min="100" max="2000" step="50" />
+                </div>
+                <div class="field full">
+                  <label for="streamHotwords">热词</label>
+                  <input id="streamHotwords" placeholder="没有热词可留空" />
+                </div>
+              </div>
+              <p class="helper">浏览器需要支持 WebAudio 解码当前音频格式。若某个格式失败，换 WAV 或 MP3 测试。</p>
+              <details class="request-preview">
+                <summary>调用链路</summary>
+                <pre>POST /asr/session -> GET /asr/sse/{session_id} -> POST /asr/chunk-b64/{session_id} -> POST /asr/end/{session_id}</pre>
+              </details>
+              <div class="actions">
+                <button id="streamRun" class="btn primary" type="button">开始模拟实时流</button>
+                <button id="streamStop" class="btn warning" type="button" disabled>结束当前会话</button>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="result-grid">
+          <section class="transcript">
+            <div class="transcript-head">
+              <span class="transcript-title">识别文本汇总</span>
+              <button id="copyTextBtn" class="btn" type="button">复制文本</button>
+            </div>
+            <div id="transcriptText" class="transcript-body">暂无识别结果。</div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2 class="panel-title">SSE 事件流</h2>
+                <p class="panel-desc">展示后端返回的 online、final、error、done 等事件。</p>
+              </div>
+            </div>
+            <div id="eventStream" class="event-stream" aria-live="polite"></div>
+          </section>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const apiBase = window.location.origin;
+    const eventStream = document.querySelector('#eventStream');
+    const transcriptText = document.querySelector('#transcriptText');
+    const state = {
+      eventSource: null,
+      sessionId: null,
+      stopped: false,
+      textParts: [],
+    };
+
+    const els = {
+      serviceStatus: document.querySelector('#serviceStatus'),
+      apiBase: document.querySelector('#apiBase'),
+      backendWs: document.querySelector('#backendWs'),
+      sessionCount: document.querySelector('#sessionCount'),
+      healthBtn: document.querySelector('#healthBtn'),
+      clearBtn: document.querySelector('#clearBtn'),
+      copyTextBtn: document.querySelector('#copyTextBtn'),
+      fileRun: document.querySelector('#fileRun'),
+      base64Run: document.querySelector('#base64Run'),
+      streamRun: document.querySelector('#streamRun'),
+      streamStop: document.querySelector('#streamStop'),
+    };
+
+    els.apiBase.textContent = apiBase;
+
+    function timeText() {
+      return new Date().toLocaleTimeString('zh-CN', { hour12: false });
+    }
+
+    function setStatus(kind, text) {
+      els.serviceStatus.className = `status-pill ${kind || ''}`;
+      els.serviceStatus.textContent = text;
+    }
+
+    function resetTranscript() {
+      state.textParts = [];
+      transcriptText.textContent = '暂无识别结果。';
+    }
+
+    function appendTranscript(data) {
+      if (!data || typeof data !== 'object' || !data.text) return;
+      state.textParts.push(data.text);
+      transcriptText.textContent = state.textParts.join('\n');
+    }
+
+    function clearEvents(title = '控制台已就绪。') {
+      eventStream.innerHTML = '';
+      resetTranscript();
+      addEvent('log', title);
+    }
+
+    function addEvent(event, data) {
+      const item = document.createElement('div');
+      item.className = `event-item ${event || ''}`;
+
+      const meta = document.createElement('div');
+      meta.className = 'event-meta';
+      meta.innerHTML = `<span>${event || 'log'}</span><span>${timeText()}</span>`;
+
+      const pre = document.createElement('pre');
+      pre.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+
+      item.append(meta, pre);
+      eventStream.prepend(item);
+      if (event === 'online' || event === 'final') appendTranscript(data);
+    }
+
+    function setBusy(button, busy, label) {
+      if (!button.dataset.defaultText) button.dataset.defaultText = button.textContent;
+      button.disabled = busy;
+      button.textContent = busy ? label : button.dataset.defaultText;
+    }
+
+    async function checkHealth() {
+      try {
+        setStatus('', '检查中');
+        const response = await fetch('/health');
+        if (!response.ok) throw new Error(await response.text());
+        const data = await response.json();
+        els.backendWs.textContent = data.backend || '-';
+        els.sessionCount.textContent = String(data.sessions ?? 0);
+        setStatus('ok', '运行中');
+      } catch (error) {
+        els.backendWs.textContent = '-';
+        setStatus('error', '异常');
+        addEvent('error', `健康检查失败：${error.message}`);
+      }
+    }
+
+    function parseSseBlock(block) {
+      const lines = block.split('\n');
+      let event = 'message';
+      const dataLines = [];
+      for (const line of lines) {
+        if (line.startsWith('event:')) event = line.slice(6).trim();
+        if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+      }
+      const raw = dataLines.join('\n');
+      let data = raw;
+      try { data = raw ? JSON.parse(raw) : {}; } catch (_) {}
+      return { event, data };
+    }
+
+    async function consumeSseResponse(response) {
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}: ${await response.text()}`);
+      if (!response.body) throw new Error('当前浏览器不支持读取流式响应');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split(/\n\s*\n/);
+        buffer = blocks.pop() || '';
+        for (const block of blocks) {
+          if (!block.trim()) continue;
+          const parsed = parseSseBlock(block.trim());
+          addEvent(parsed.event, parsed.data);
+        }
+      }
+
+      if (buffer.trim()) {
+        const parsed = parseSseBlock(buffer.trim());
+        addEvent(parsed.event, parsed.data);
+      }
+    }
+
+    function readFileAsDataUrl(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error || new Error('读取文件失败'));
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function bytesToBase64(bytes) {
+      let binary = '';
+      const step = 0x8000;
+      for (let i = 0; i < bytes.length; i += step) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + step));
+      }
+      return btoa(binary);
+    }
+
+    function pcm16ToBase64(pcm16) {
+      return bytesToBase64(new Uint8Array(pcm16.buffer, pcm16.byteOffset, pcm16.byteLength));
+    }
+
+    function formValue(id, fallback = '') {
+      return document.querySelector(`#${id}`)?.value || fallback;
+    }
+
+    function appendCommonForm(form, prefix) {
+      form.append('mode', formValue(`${prefix}Mode`, 'online'));
+      form.append('audio_fs', formValue(`${prefix}AudioFs`, '16000'));
+      form.append('chunk_size', '5,10,5');
+      form.append('chunk_interval', '10');
+      form.append('encoder_chunk_look_back', '4');
+      form.append('decoder_chunk_look_back', '0');
+      form.append('hotwords', formValue(`${prefix}Hotwords`, ''));
+    }
+
+    async function runFileSse() {
+      const file = document.querySelector('#fileInput').files[0];
+      if (!file) return addEvent('error', '请先选择音频文件');
+      clearEvents(`文件识别开始：${file.name}`);
+      setBusy(els.fileRun, true, '识别中');
+      try {
+        const form = new FormData();
+        appendCommonForm(form, 'file');
+        form.append('file', file, file.name);
+        const response = await fetch('/asr/file-sse', { method: 'POST', body: form });
+        await consumeSseResponse(response);
+      } catch (error) {
+        addEvent('error', error.message);
+      } finally {
+        setBusy(els.fileRun, false);
+        checkHealth();
+      }
+    }
+
+    async function runBase64Sse() {
+      const file = document.querySelector('#base64File').files[0];
+      if (!file) return addEvent('error', '请先选择音频文件');
+      clearEvents(`完整 Base64 识别开始：${file.name}`);
+      setBusy(els.base64Run, true, '处理中');
+      try {
+        const audioBase64 = await readFileAsDataUrl(file);
+        const body = {
+          audio_base64: audioBase64,
+          filename: file.name,
+          mode: formValue('base64Mode', 'online'),
+          audio_fs: Number(formValue('base64AudioFs', '16000')),
+          chunk_size: '5,10,5',
+          chunk_interval: 10,
+          encoder_chunk_look_back: 4,
+          decoder_chunk_look_back: 0,
+          hotwords: formValue('base64Hotwords', ''),
+        };
+        const response = await fetch('/asr/base64-sse', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        await consumeSseResponse(response);
+      } catch (error) {
+        addEvent('error', error.message);
+      } finally {
+        setBusy(els.base64Run, false);
+        checkHealth();
+      }
+    }
+
+    async function fileToPcm16(file, sampleRate = 16000) {
+      const arrayBuffer = await file.arrayBuffer();
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const decoded = await audioContext.decodeAudioData(arrayBuffer.slice(0));
+      const frameCount = Math.max(1, Math.ceil(decoded.duration * sampleRate));
+      const offline = new OfflineAudioContext(1, frameCount, sampleRate);
+      const source = offline.createBufferSource();
+      source.buffer = decoded;
+      source.connect(offline.destination);
+      source.start(0);
+      const rendered = await offline.startRendering();
+      await audioContext.close();
+      const channel = rendered.getChannelData(0);
+      const pcm = new Int16Array(channel.length);
+      for (let i = 0; i < channel.length; i += 1) {
+        const sample = Math.max(-1, Math.min(1, channel[i]));
+        pcm[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+      }
+      return pcm;
+    }
+
+    async function createSession() {
+      const form = new FormData();
+      form.append('mode', formValue('streamMode', 'online'));
+      form.append('audio_fs', '16000');
+      form.append('chunk_size', '5,10,5');
+      form.append('chunk_interval', '10');
+      form.append('encoder_chunk_look_back', '4');
+      form.append('decoder_chunk_look_back', '0');
+      form.append('hotwords', formValue('streamHotwords', ''));
+      const response = await fetch('/asr/session', { method: 'POST', body: form });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    }
+
+    function openSessionSse(sessionId) {
+      if (state.eventSource) state.eventSource.close();
+      state.eventSource = new EventSource(`/asr/sse/${sessionId}`);
+      for (const name of ['online', 'final', 'message', 'error', 'done']) {
+        state.eventSource.addEventListener(name, (event) => {
+          let data = event.data;
+          try { data = event.data ? JSON.parse(event.data) : {}; } catch (_) {}
+          addEvent(name, data);
+          if (name === 'done') {
+            state.eventSource.close();
+            state.eventSource = null;
+            state.sessionId = null;
+            els.streamStop.disabled = true;
+          }
+        });
+      }
+      state.eventSource.onerror = () => addEvent('error', 'SSE 连接异常或已关闭');
+    }
+
+    function wait(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    async function endCurrentSession() {
+      if (!state.sessionId) return;
+      const sessionId = state.sessionId;
+      state.stopped = true;
+      const response = await fetch(`/asr/end/${sessionId}`, { method: 'POST' });
+      if (!response.ok) throw new Error(await response.text());
+      addEvent('log', `已发送结束信号：${sessionId}`);
+    }
+
+    async function runStreamSimulation() {
+      const file = document.querySelector('#streamFile').files[0];
+      if (!file) return addEvent('error', '请先选择音频文件');
+      clearEvents(`实时分片模拟开始：${file.name}`);
+      setBusy(els.streamRun, true, '推流中');
+      els.streamStop.disabled = false;
+      state.stopped = false;
+      try {
+        addEvent('log', '正在用浏览器解码音频，并转换为 16k 单声道 PCM16');
+        const pcm = await fileToPcm16(file, 16000);
+        const session = await createSession();
+        state.sessionId = session.session_id;
+        addEvent('session', session);
+        openSessionSse(session.session_id);
+
+        const chunkMs = Number(formValue('chunkMs', '300'));
+        const samplesPerChunk = Math.max(1600, Math.floor(16000 * chunkMs / 1000));
+        for (let start = 0; start < pcm.length && !state.stopped; start += samplesPerChunk) {
+          const chunk = pcm.subarray(start, Math.min(start + samplesPerChunk, pcm.length));
+          const response = await fetch(`/asr/chunk-b64/${session.session_id}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ audio_base64: pcm16ToBase64(chunk) }),
+          });
+          if (!response.ok) throw new Error(await response.text());
+          await wait(Math.min(chunkMs, 500));
+        }
+        await endCurrentSession();
+      } catch (error) {
+        addEvent('error', error.message);
+      } finally {
+        setBusy(els.streamRun, false);
+        els.streamStop.disabled = true;
+        checkHealth();
+      }
+    }
+
+    function showPane(paneId) {
+      document.querySelectorAll('.pane').forEach((pane) => pane.classList.toggle('active', pane.id === paneId));
+      document.querySelectorAll('.nav-item[data-pane], .mode-btn').forEach((item) => {
+        item.classList.toggle('active', item.dataset.pane === paneId);
+      });
+    }
+
+    document.querySelectorAll('[data-pane]').forEach((item) => {
+      item.addEventListener('click', () => showPane(item.dataset.pane));
+    });
+
+    els.healthBtn.addEventListener('click', checkHealth);
+    els.clearBtn.addEventListener('click', () => clearEvents('事件面板已清空。'));
+    els.copyTextBtn.addEventListener('click', async () => {
+      const text = state.textParts.join('\n');
+      if (!text) return addEvent('error', '当前没有可复制的识别文本');
+      await navigator.clipboard.writeText(text);
+      addEvent('log', '识别文本已复制到剪贴板');
+    });
+    els.fileRun.addEventListener('click', runFileSse);
+    els.base64Run.addEventListener('click', runBase64Sse);
+    els.streamRun.addEventListener('click', runStreamSimulation);
+    els.streamStop.addEventListener('click', async () => {
+      try { await endCurrentSession(); } catch (error) { addEvent('error', error.message); }
+    });
+
+    clearEvents('控制台已就绪，请选择左侧功能开始测试。');
+    checkHealth();
+  </script>
+</body>
+</html>

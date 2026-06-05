@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir -r /app/requirements.sse.txt
 
 COPY asr_sse_adapter.py /app/asr_sse_adapter.py
 COPY start_sse_adapter.sh /app/start_sse_adapter.sh
+COPY static /app/static
 
 RUN chmod +x /app/start_sse_adapter.sh
 
