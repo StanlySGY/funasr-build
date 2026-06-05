@@ -7,6 +7,7 @@ import json
 import os
 import uuid
 import wave
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -213,7 +214,8 @@ def build_audio_sse_response(
     async def events():
         queue: asyncio.Queue = asyncio.Queue()
         try:
-            async with await connect_backend() as ws:
+            ws = await connect_backend()
+            try:
                 await ws.send(
                     build_init_message(
                         mode=mode,
@@ -272,6 +274,9 @@ def build_audio_sse_response(
                 recv_task.cancel()
                 if should_emit_done:
                     yield sse_event("done", {})
+            finally:
+                with suppress(Exception):
+                    await ws.close()
         except Exception as exc:
             yield sse_event("error", {"message": str(exc)})
             yield sse_event("done", {})
