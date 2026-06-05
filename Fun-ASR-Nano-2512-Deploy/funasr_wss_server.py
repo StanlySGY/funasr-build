@@ -26,6 +26,13 @@ import logging
 import argparse
 import ssl
 import os
+import sys
+import atexit
+import faulthandler
+import signal
+import threading
+import uuid
+import platform
 import numpy as np
 import torch
 import traceback
@@ -38,10 +45,80 @@ from funasr import AutoModel
 
 logging.basicConfig(level=logging.ERROR)
 
-# 全局线程池，用于执行模型推理，避免阻塞 asyncio 事件循环。
+PROCESS_START_TIME = time.time()
+_ORIGINAL_SYS_EXIT = sys.exit
+_ORIGINAL_OS_EXIT = os._exit
+
+
+def diag(event, **fields):
+    payload = {
+        "event": event,
+        "pid": os.getpid(),
+        "thread": threading.current_thread().name,
+        "uptime_sec": round(time.time() - PROCESS_START_TIME, 3),
+    }
+    payload.update(fields)
+    print("DIAG " + json.dumps(payload, ensure_ascii=False, default=str), flush=True)
+
+
+def _stack_text(frame=None):
+    if frame is not None:
+        return "".join(traceback.format_stack(frame))
+    return "".join(traceback.format_stack())
+
+
+def _logged_sys_exit(code=0):
+    diag("sys_exit_called", code=code, stack=_stack_text())
+    _ORIGINAL_SYS_EXIT(code)
+
+
+def _logged_os_exit(code=0):
+    diag("os__exit_called", code=code, stack=_stack_text())
+    sys.stdout.flush()
+    sys.stderr.flush()
+    _ORIGINAL_OS_EXIT(code)
+
+
+def _handle_unhandled_exception(exc_type, exc_value, exc_traceback):
+    diag("unhandled_exception", exc_type=getattr(exc_type, "__name__", str(exc_type)), exc=str(exc_value))
+    traceback.print_exception(exc_type, exc_value, exc_traceback)
+
+
+def _handle_thread_exception(args):
+    diag(
+        "thread_unhandled_exception",
+        thread=args.thread.name if args.thread else None,
+        exc_type=getattr(args.exc_type, "__name__", str(args.exc_type)),
+        exc=str(args.exc_value),
+    )
+    traceback.print_exception(args.exc_type, args.exc_value, args.exc_traceback)
+
+
+def _enable_diagnostics():
+    faulthandler.enable(file=sys.stderr, all_threads=True)
+    with suppress(Exception):
+        faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
+    sys.exit = _logged_sys_exit
+    os._exit = _logged_os_exit
+    sys.excepthook = _handle_unhandled_exception
+    threading.excepthook = _handle_thread_exception
+    atexit.register(lambda: diag("process_atexit"))
+    diag(
+        "process_start",
+        argv=sys.argv,
+        python=sys.version.replace("\n", " "),
+        platform=platform.platform(),
+        machine=platform.machine(),
+        torch_version=getattr(torch, "__version__", None),
+        torch_file=getattr(torch, "__file__", None),
+    )
+
+
+_enable_diagnostics()
+
+# 全局线程池配置，用于执行模型推理，避免阻塞 asyncio 事件循环。
 # ARM CPU 上共享 AutoModel 并发推理容易触发底层库异常退出，默认串行保证稳定。
 INFERENCE_WORKERS = int(os.environ.get("FUNASR_INFERENCE_WORKERS", "1"))
-inference_executor = ThreadPoolExecutor(max_workers=INFERENCE_WORKERS)
 
 def get_args():
     """
@@ -103,9 +180,27 @@ def get_args():
 
 args = get_args()
 
+diag(
+    "runtime_config",
+    host=args.host,
+    port=args.port,
+    device=args.device,
+    ngpu=args.ngpu,
+    ncpu=args.ncpu,
+    fp16=args.fp16,
+    inference_workers=INFERENCE_WORKERS,
+    asr_model=args.asr_model,
+    vad_model=args.vad_model,
+    punc_model=args.punc_model,
+)
+inference_executor = ThreadPoolExecutor(max_workers=INFERENCE_WORKERS)
+diag("inference_executor_start", max_workers=INFERENCE_WORKERS)
+
 websocket_users = set()
 
 print("正在加载模型...", flush=True)
+diag("model_load_start", model="asr", path=args.asr_model)
+model_load_started = time.time()
 
 # ASR 模型 (离线/2pass + 在线/流式)
 # [优化] 合并模型加载：
@@ -123,11 +218,14 @@ model_asr = AutoModel(
     disable_log=True,
     fp16=args.fp16,
 )
+diag("model_load_end", model="asr", elapsed_ms=round((time.time() - model_load_started) * 1000, 3))
 
 # 共享同一个实例
 model_asr_streaming = model_asr
 
 # VAD 模型
+diag("model_load_start", model="vad", path=args.vad_model)
+model_load_started = time.time()
 model_vad = AutoModel(
     model=args.vad_model,
     model_revision=args.vad_model_revision,
@@ -138,9 +236,12 @@ model_vad = AutoModel(
     disable_log=True,
     fp16=args.fp16,
 )
+diag("model_load_end", model="vad", elapsed_ms=round((time.time() - model_load_started) * 1000, 3))
 
 # 标点模型
 if args.punc_model != "":
+    diag("model_load_start", model="punc", path=args.punc_model)
+    model_load_started = time.time()
     model_punc = AutoModel(
         model=args.punc_model,
         model_revision=args.punc_model_revision,
@@ -151,33 +252,100 @@ if args.punc_model != "":
         disable_log=True,
         fp16=args.fp16,
     )
+    diag("model_load_end", model="punc", elapsed_ms=round((time.time() - model_load_started) * 1000, 3))
 else:
     model_punc = None
+    diag("model_load_skipped", model="punc")
 
 print("模型加载完成！目前支持简单的多用户并发。", flush=True)
+diag("all_models_loaded")
+
+def _summarize_input(input_data):
+    if isinstance(input_data, str):
+        return {"type": "str", "chars": len(input_data)}
+    if isinstance(input_data, bytes):
+        return {"type": "bytes", "bytes": len(input_data)}
+    if isinstance(input_data, (list, tuple)):
+        items = []
+        for item in input_data[:3]:
+            if hasattr(item, "numel"):
+                items.append({"type": type(item).__name__, "numel": int(item.numel()), "shape": list(item.shape)})
+            else:
+                items.append({"type": type(item).__name__, "len": len(item) if hasattr(item, "__len__") else None})
+        return {"type": type(input_data).__name__, "len": len(input_data), "items": items}
+    return {"type": type(input_data).__name__}
+
+
+def _summarize_result(result):
+    if isinstance(result, list):
+        summary = {"type": "list", "len": len(result)}
+        if result and isinstance(result[0], dict):
+            first = result[0]
+            summary["first_keys"] = list(first.keys())[:8]
+            if "text" in first:
+                summary["first_text_len"] = len(first.get("text") or "")
+            if "value" in first:
+                value = first.get("value")
+                summary["first_value_len"] = len(value) if hasattr(value, "__len__") else None
+        return summary
+    return {"type": type(result).__name__}
+
 
 # 异步模型推理辅助函数
-async def run_model_inference(model, input, **kwargs):
+async def run_model_inference(model, input, *, label="unknown", websocket=None, **kwargs):
     """
     在线程池中运行模型推理，避免阻塞 asyncio 主事件循环。
     
     Args:
         model: FunASR 模型实例
         input: 模型输入数据 (通常是 Tensor 列表或文本)
+        label: 诊断日志中的模型调用标签
+        websocket: 当前 WebSocket 连接对象，用于关联会话诊断信息
         **kwargs: 额外的推理参数 (如 status_dict)
     
     Returns:
         推理结果
     """
     loop = asyncio.get_running_loop()
+    call_id = uuid.uuid4().hex[:12]
+    started = time.time()
+    diag(
+        "inference_start",
+        call_id=call_id,
+        label=label,
+        session_id=getattr(websocket, "diag_session_id", None),
+        wav_name=getattr(websocket, "wav_name", None),
+        mode=getattr(websocket, "mode", None),
+        input=_summarize_input(input),
+        kwargs_keys=sorted(kwargs.keys()),
+    )
     try:
         # 使用线程池执行同步的 blocking generate 方法
-        return await loop.run_in_executor(
+        result = await loop.run_in_executor(
             inference_executor,
             lambda: model.generate(input=input, **kwargs)
         )
+        diag(
+            "inference_end",
+            call_id=call_id,
+            label=label,
+            elapsed_ms=round((time.time() - started) * 1000, 3),
+            result=_summarize_result(result),
+        )
+        return result
     except SystemExit as exc:
+        diag("inference_system_exit", call_id=call_id, label=label, code=exc.code, stack=_stack_text())
         raise RuntimeError(f"Model inference attempted to exit process: {exc.code}") from exc
+    except BaseException as exc:
+        diag(
+            "inference_exception",
+            call_id=call_id,
+            label=label,
+            exc_type=type(exc).__name__,
+            exc=str(exc),
+            elapsed_ms=round((time.time() - started) * 1000, 3),
+        )
+        raise
 
 def decode_audio_chunk(chunk_bytes):
     """
@@ -234,9 +402,13 @@ async def ws_serve(websocket, path=None):
     frames = [] 
     frames_asr = [] # 离线 ASR 缓冲区 (由 VAD 分割)
     frames_asr_online = [] # 在线流式 ASR 缓冲区
+    audio_chunk_count = 0
+    audio_bytes_total = 0
+    control_message_count = 0
     
     
     global websocket_users
+    websocket.diag_session_id = uuid.uuid4().hex
     websocket_users.add(websocket)
     
     # 初始化状态字典 (参考官方示例)
@@ -251,14 +423,28 @@ async def ws_serve(websocket, path=None):
     speech_end_i = -1
     websocket.wav_name = "microphone"
     websocket.mode = "2pass"
+    websocket.is_speaking = True
     
     print("new user connected", flush=True)
+    diag("websocket_connect", session_id=websocket.diag_session_id, active_users=len(websocket_users))
 
     try:
         async for message in websocket:
             if isinstance(message, str):
+                control_message_count += 1
                 try:
                     messagejson = json.loads(message)
+                    diag(
+                        "websocket_control",
+                        session_id=websocket.diag_session_id,
+                        control_count=control_message_count,
+                        keys=sorted(messagejson.keys()),
+                        wav_name=messagejson.get("wav_name", websocket.wav_name),
+                        mode=messagejson.get("mode", websocket.mode),
+                        is_speaking=messagejson.get("is_speaking"),
+                        chunk_size=messagejson.get("chunk_size"),
+                        chunk_interval=messagejson.get("chunk_interval", websocket.chunk_interval),
+                    )
                     
                     if "is_speaking" in messagejson:
                         websocket.is_speaking = messagejson["is_speaking"]
@@ -282,6 +468,13 @@ async def ws_serve(websocket, path=None):
                         websocket.mode = messagejson["mode"]
                 except Exception as e:
                     print("JSON error:", e)
+                    diag(
+                        "websocket_control_json_error",
+                        session_id=websocket.diag_session_id,
+                        control_count=control_message_count,
+                        exc_type=type(e).__name__,
+                        exc=str(e),
+                    )
 
             # 确保 VAD 的分块大小正确计算
             if "chunk_size" in websocket.status_dict_asr_online:
@@ -293,9 +486,23 @@ async def ws_serve(websocket, path=None):
             if len(frames_asr_online) > 0 or len(frames_asr) >= 0 or not isinstance(message, str):
                 if not isinstance(message, str):
                     # 收到的是音频块
+                    audio_chunk_count += 1
+                    audio_bytes_total += len(message)
                     frames.append(message)
                     duration_ms = len(message) // 32 # 16k rate, 16bit = 2 bytes. 1ms = 16 samples = 32 bytes
                     websocket.vad_pre_idx += duration_ms
+                    if audio_chunk_count <= 5 or audio_chunk_count % 20 == 0 or not websocket.is_speaking:
+                        diag(
+                            "websocket_audio_chunk",
+                            session_id=websocket.diag_session_id,
+                            chunk_count=audio_chunk_count,
+                            chunk_bytes=len(message),
+                            total_bytes=audio_bytes_total,
+                            duration_ms=duration_ms,
+                            is_speaking=websocket.is_speaking,
+                            mode=websocket.mode,
+                            wav_name=websocket.wav_name,
+                        )
 
                     # 1. 送入在线流式 ASR (Online ASR)
                     frames_asr_online.append(message)
@@ -360,16 +567,43 @@ async def ws_serve(websocket, path=None):
                         # 保留少量上下文
                         frames = frames[-20:]
 
-    except websockets.ConnectionClosed:
+    except websockets.ConnectionClosed as e:
         print("连接已关闭。", websocket_users, flush=True)
+        diag(
+            "websocket_connection_closed",
+            session_id=websocket.diag_session_id,
+            code=getattr(e, "code", None),
+            reason=getattr(e, "reason", None),
+            audio_chunks=audio_chunk_count,
+            audio_bytes=audio_bytes_total,
+            control_messages=control_message_count,
+        )
     except SystemExit as e:
         print(f"SystemExit ignored in websocket handler: {e}", flush=True)
+        diag("websocket_system_exit", session_id=websocket.diag_session_id, code=e.code, stack=_stack_text())
         traceback.print_exc()
     except Exception as e:
         print("Exception:", e)
+        diag(
+            "websocket_exception",
+            session_id=websocket.diag_session_id,
+            exc_type=type(e).__name__,
+            exc=str(e),
+            audio_chunks=audio_chunk_count,
+            audio_bytes=audio_bytes_total,
+            control_messages=control_message_count,
+        )
         import traceback
         traceback.print_exc()
     finally:
+        diag(
+            "websocket_disconnect",
+            session_id=websocket.diag_session_id,
+            audio_chunks=audio_chunk_count,
+            audio_bytes=audio_bytes_total,
+            control_messages=control_message_count,
+            active_users_before_remove=len(websocket_users),
+        )
         if websocket in websocket_users:
             websocket_users.remove(websocket)
         await ws_reset(websocket)
@@ -393,7 +627,11 @@ async def async_vad(websocket, audio_in):
     # 异步并发调用 VAD 模型
     # 注意：这里我们依旧要遵守 Nano 模型的规则（虽然是 VAD，但保持输入格式一致比较安全），传入 list
     segments_result_list = await run_model_inference(
-        model_vad, input=[audio_tensor], **websocket.status_dict_vad
+        model_vad,
+        input=[audio_tensor],
+        label="vad",
+        websocket=websocket,
+        **websocket.status_dict_vad,
     )
     if not segments_result_list or len(segments_result_list) == 0:
         return -1, -1
@@ -425,7 +663,11 @@ async def async_asr(websocket, audio_in):
         audio_tensor = decode_audio_chunk(audio_in)
         # 异步并发调用 ASR 模型
         rec_result_list = await run_model_inference(
-            model_asr, input=[audio_tensor], **websocket.status_dict_asr
+            model_asr,
+            input=[audio_tensor],
+            label="asr_offline",
+            websocket=websocket,
+            **websocket.status_dict_asr,
         )
         if not rec_result_list or len(rec_result_list) == 0:
            # 如果为空，直接返回空文本
@@ -437,7 +679,11 @@ async def async_asr(websocket, audio_in):
         if model_punc is not None and len(rec_result["text"]) > 0:
             # 异步并发调用标点模型
             punc_result_list = await run_model_inference(
-                model_punc, input=rec_result["text"], **websocket.status_dict_punc
+                model_punc,
+                input=rec_result["text"],
+                label="punc",
+                websocket=websocket,
+                **websocket.status_dict_punc,
             )
             if punc_result_list and len(punc_result_list) > 0:
                 rec_result = punc_result_list[0]
@@ -488,7 +734,11 @@ async def async_asr_online(websocket, audio_in):
         audio_tensor = decode_audio_chunk(audio_in)
         # 异步并发调用流式 ASR 模型
         rec_result_list = await run_model_inference(
-             model_asr_streaming, input=[audio_tensor], **websocket.status_dict_asr_online
+             model_asr_streaming,
+             input=[audio_tensor],
+             label="asr_online",
+             websocket=websocket,
+             **websocket.status_dict_asr_online,
         )
         if not rec_result_list or len(rec_result_list) == 0:
              return
@@ -514,10 +764,13 @@ async def async_asr_online(websocket, audio_in):
 
 
 async def main():
+    diag("server_main_start", host=args.host, port=args.port)
     ssl_context = None
     if len(args.certfile) > 0:
+        diag("server_ssl_load_start", certfile=args.certfile, keyfile=args.keyfile)
         ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ssl_context.load_cert_chain(args.certfile, keyfile=args.keyfile)
+        diag("server_ssl_load_end")
 
     async with websockets.serve(
         ws_serve,
@@ -528,6 +781,7 @@ async def main():
         ssl=ssl_context,
     ):
         print(f"服务已启动，监听地址: ws://{args.host}:{args.port}", flush=True)
+        diag("server_listening", url=f"ws://{args.host}:{args.port}")
         await asyncio.Future()
 
 
