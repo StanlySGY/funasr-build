@@ -531,4 +531,13 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    while True:
+        try:
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            raise
+        except BaseException as e:
+            print(f"WebSocket server main exited unexpectedly: {e}", flush=True)
+            traceback.print_exc()
+        print("WebSocket server main returned; restarting in-process...", flush=True)
+        time.sleep(1)
