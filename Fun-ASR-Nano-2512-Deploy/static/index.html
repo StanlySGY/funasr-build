@@ -812,6 +812,7 @@
       eventSource: null,
       sessionId: null,
       stopped: false,
+      streamDone: false,
       textParts: [],
     };
 
@@ -1060,6 +1061,7 @@
 
     function openSessionSse(sessionId) {
       if (state.eventSource) state.eventSource.close();
+      state.streamDone = false;
       state.eventSource = new EventSource(`/asr/sse/${sessionId}`);
       for (const name of ['online', 'final', 'message', 'error', 'done']) {
         state.eventSource.addEventListener(name, (event) => {
@@ -1067,6 +1069,7 @@
           try { data = event.data ? JSON.parse(event.data) : {}; } catch (_) {}
           addEvent(name, data);
           if (name === 'done') {
+            state.streamDone = true;
             state.eventSource.close();
             state.eventSource = null;
             state.sessionId = null;
@@ -1074,7 +1077,10 @@
           }
         });
       }
-      state.eventSource.onerror = () => addEvent('error', 'SSE 连接异常或已关闭');
+      state.eventSource.onerror = () => {
+        if (state.streamDone || !state.sessionId) return;
+        addEvent('error', 'SSE 连接异常或已关闭');
+      };
     }
 
     function wait(ms) {
@@ -1097,6 +1103,7 @@
       setBusy(els.streamRun, true, '推流中');
       els.streamStop.disabled = false;
       state.stopped = false;
+      state.streamDone = false;
       try {
         addEvent('log', '正在用浏览器解码音频，并转换为 16k 单声道 PCM16');
         const pcm = await fileToPcm16(file, 16000);

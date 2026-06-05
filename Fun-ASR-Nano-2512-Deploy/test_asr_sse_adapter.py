@@ -10,6 +10,7 @@ from asr_sse_adapter import (
     app,
     decode_audio_base64,
     send_chunk_base64,
+    session_sse,
     sessions,
 )
 
@@ -17,9 +18,13 @@ from asr_sse_adapter import (
 class FakeWebSocket:
     def __init__(self):
         self.sent = []
+        self.closed = False
 
     async def send(self, data):
         self.sent.append(data)
+
+    async def close(self):
+        self.closed = True
 
 
 class DecodeAudioBase64Test(unittest.TestCase):
@@ -71,6 +76,33 @@ class DecodeAudioBase64Test(unittest.TestCase):
 
         self.assertEqual([expected], websocket.sent)
         self.assertEqual({"ok": True, "bytes": len(expected)}, response)
+
+    def test_session_sse_suppresses_expected_backend_close_after_end(self):
+        async def collect_events():
+            session_id = "close-frame-test"
+            websocket = FakeWebSocket()
+            session = AsrSession(websocket=websocket)
+            session.ending = True
+            sessions[session_id] = session
+            await session.queue.put(("online", {"text": "你好"}))
+            await session.queue.put(("error", {"message": "no close frame received or sent"}))
+            await session.queue.put(("done", {}))
+
+            response = await session_sse(session_id)
+            chunks = []
+            async for chunk in response.body_iterator:
+                if isinstance(chunk, bytes):
+                    chunk = chunk.decode("utf-8")
+                chunks.append(chunk)
+            return "".join(chunks), websocket.closed, session_id in sessions
+
+        body, closed, session_exists = asyncio.run(collect_events())
+
+        self.assertIn('event: online', body)
+        self.assertIn('event: done', body)
+        self.assertNotIn('no close frame', body)
+        self.assertTrue(closed)
+        self.assertFalse(session_exists)
 
 
 if __name__ == "__main__":

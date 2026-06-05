@@ -181,6 +181,10 @@ def event_name(message: dict) -> str:
     return "message"
 
 
+def is_backend_close_without_frame(event: str, data: dict) -> bool:
+    return event == "error" and "no close frame" in data.get("message", "")
+
+
 async def connect_backend():
     last_error = None
     for attempt in range(1, DEFAULT_BACKEND_CONNECT_RETRIES + 1):
@@ -425,6 +429,8 @@ async def session_sse(session_id: str = Path(..., description="通过 POST /asr/
             saw_final_after_end = False
             while True:
                 event, data = await session.queue.get()
+                if session.ending and is_backend_close_without_frame(event, data):
+                    continue
                 yield sse_event(event, data)
                 if session.ending and event == "final":
                     saw_final_after_end = True
