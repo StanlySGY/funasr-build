@@ -13,9 +13,9 @@ from typing import Any
 
 import uvicorn
 import websockets
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Path, Request, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 DEFAULT_BACKEND = os.environ.get("FUNASR_BACKEND_WS", "ws://127.0.0.1:10095")
 DEFAULT_BACKEND_CONNECT_RETRIES = int(os.environ.get("FUNASR_BACKEND_CONNECT_RETRIES", "30"))
@@ -30,7 +30,41 @@ SSE_HEADERS = {
     "X-Accel-Buffering": "no",
 }
 
-app = FastAPI()
+API_DESCRIPTION = """
+FunASR WebSocket 的 SSE 封装服务，面向业务系统提供语音识别接口。
+
+## 推荐用法
+
+### 1. 上传完整音频文件
+使用 `POST /asr/file-sse`，适合已有 `.wav` 或 `.pcm` 文件的场景，接口会直接返回 SSE 流式识别结果。
+
+### 2. 上传完整 Base64 音频
+使用 `POST /asr/base64-sse`，适合前端或业务系统已经拿到完整音频 Base64 的场景。
+
+### 3. 实时推送 Base64 音频流
+依次调用：
+1. `POST /asr/session` 创建会话，拿到 `session_id`
+2. `GET /asr/sse/{session_id}` 订阅识别结果
+3. `POST /asr/chunk-b64/{session_id}` 持续推送 Base64 音频分片
+4. `POST /asr/end/{session_id}` 通知服务端音频结束
+
+## 返回事件
+
+SSE 返回格式为 `event: 事件名` 和 `data: JSON`：
+- `online`：实时中间识别结果
+- `final`：最终识别结果
+- `message`：其他后端消息
+- `error`：错误信息
+- `done`：本次识别结束
+
+## 音频要求
+
+- 推荐 16kHz、单声道、16-bit PCM/WAV
+- WAV 上传支持自动重采样到 16kHz
+- 若传 PCM，需要通过 `audio_fs` 告诉服务端原始采样率
+"""
+
+app = FastAPI(title="FunASR SSE 语音识别服务", description=API_DESCRIPTION, version="1.0.0")
 sessions: dict[str, "AsrSession"] = {}
 backend_ws = DEFAULT_BACKEND
 
@@ -44,19 +78,19 @@ class AsrSession:
 
 
 class Base64AsrRequest(BaseModel):
-    audio_base64: str
-    filename: str = "audio.pcm"
-    mode: str = "online"
-    audio_fs: int = 16000
-    chunk_size: str | list[int] = "5,10,5"
-    chunk_interval: int = DEFAULT_CHUNK_INTERVAL
-    encoder_chunk_look_back: int = 4
-    decoder_chunk_look_back: int = 0
-    hotwords: str = ""
+    audio_base64: str = Field(..., description="完整音频的 Base64 字符串，支持纯 Base64 或 data:audio/wav;base64,... 格式")
+    filename: str = Field("audio.pcm", description="音频文件名，用于判断格式；WAV 请以 .wav 结尾，PCM 可用 .pcm")
+    mode: str = Field("online", description="识别模式：online 为实时结果；2pass 为两遍识别；offline 为离线结果")
+    audio_fs: int = Field(16000, description="PCM 原始采样率；WAV 会自动读取文件头采样率")
+    chunk_size: str | list[int] = Field("5,10,5", description="FunASR 分块参数，默认 5,10,5；一般不用改")
+    chunk_interval: int = Field(DEFAULT_CHUNK_INTERVAL, description="FunASR 分块间隔，默认 10；一般不用改")
+    encoder_chunk_look_back: int = Field(4, description="编码器回看块数，默认 4；一般不用改")
+    decoder_chunk_look_back: int = Field(0, description="解码器回看块数，默认 0；一般不用改")
+    hotwords: str = Field("", description="热词，多个热词可按 FunASR 后端格式传入；没有可留空")
 
 
 class Base64ChunkRequest(BaseModel):
-    audio_base64: str
+    audio_base64: str = Field(..., description="单个音频分片的 Base64 字符串，支持纯 Base64 或 data:audio/...;base64,... 格式")
 
 
 def parse_chunk_size(value: str | list[int]) -> list[int]:
@@ -189,7 +223,7 @@ async def cleanup_session(session_id: str) -> None:
         pass
 
 
-@app.get("/health")
+@app.get("/health", summary="健康检查", description="检查 SSE 适配器是否启动，并返回当前后端 WebSocket 地址和会话数量。")
 async def health():
     return {"status": "ok", "backend": backend_ws, "sessions": len(sessions)}
 
@@ -284,16 +318,20 @@ def build_audio_sse_response(
     return StreamingResponse(events(), media_type="text/event-stream", headers=SSE_HEADERS)
 
 
-@app.post("/asr/file-sse")
+@app.post(
+    "/asr/file-sse",
+    summary="上传音频文件并返回 SSE 识别流",
+    description="上传一个完整音频文件，接口会边处理边通过 SSE 返回识别结果。适合测试、批量文件识别、已有 WAV/PCM 文件的业务场景。",
+)
 async def asr_file_sse(
-    file: UploadFile = File(...),
-    mode: str = Form("online"),
-    audio_fs: int = Form(16000),
-    chunk_size: str = Form("5,10,5"),
-    chunk_interval: int = Form(DEFAULT_CHUNK_INTERVAL),
-    encoder_chunk_look_back: int = Form(4),
-    decoder_chunk_look_back: int = Form(0),
-    hotwords: str = Form(""),
+    file: UploadFile = File(..., description="要识别的音频文件；推荐 16kHz 单声道 16-bit WAV/PCM，WAV 支持自动重采样"),
+    mode: str = Form("online", description="识别模式：online 实时；2pass 两遍识别；offline 离线"),
+    audio_fs: int = Form(16000, description="PCM 采样率；如果上传 WAV，会自动读取 WAV 文件头"),
+    chunk_size: str = Form("5,10,5", description="FunASR 分块参数，默认 5,10,5；一般不用改"),
+    chunk_interval: int = Form(DEFAULT_CHUNK_INTERVAL, description="FunASR 分块间隔，默认 10；一般不用改"),
+    encoder_chunk_look_back: int = Form(4, description="编码器回看块数，默认 4；一般不用改"),
+    decoder_chunk_look_back: int = Form(0, description="解码器回看块数，默认 0；一般不用改"),
+    hotwords: str = Form("", description="热词；没有可留空"),
 ):
     return build_audio_sse_response(
         raw=await file.read(),
@@ -308,7 +346,11 @@ async def asr_file_sse(
     )
 
 
-@app.post("/asr/base64-sse")
+@app.post(
+    "/asr/base64-sse",
+    summary="上传完整 Base64 音频并返回 SSE 识别流",
+    description="请求体传完整音频 Base64，接口会返回 SSE 流式识别结果。适合前端或业务系统一次性提交完整音频内容。",
+)
 async def asr_base64_sse(request: Base64AsrRequest):
     return build_audio_sse_response(
         raw=decode_audio_base64(request.audio_base64),
@@ -323,15 +365,19 @@ async def asr_base64_sse(request: Base64AsrRequest):
     )
 
 
-@app.post("/asr/session")
+@app.post(
+    "/asr/session",
+    summary="创建实时识别会话",
+    description="创建一个实时语音识别会话，返回 session_id。之后用该 session_id 订阅 SSE，并持续推送音频分片。",
+)
 async def create_session(
-    mode: str = Form("online"),
-    audio_fs: int = Form(16000),
-    chunk_size: str = Form("5,10,5"),
-    chunk_interval: int = Form(DEFAULT_CHUNK_INTERVAL),
-    encoder_chunk_look_back: int = Form(4),
-    decoder_chunk_look_back: int = Form(0),
-    hotwords: str = Form(""),
+    mode: str = Form("online", description="识别模式：online 实时；2pass 两遍识别；offline 离线"),
+    audio_fs: int = Form(16000, description="后续推送 PCM 分片的采样率；推荐 16000"),
+    chunk_size: str = Form("5,10,5", description="FunASR 分块参数，默认 5,10,5；一般不用改"),
+    chunk_interval: int = Form(DEFAULT_CHUNK_INTERVAL, description="FunASR 分块间隔，默认 10；一般不用改"),
+    encoder_chunk_look_back: int = Form(4, description="编码器回看块数，默认 4；一般不用改"),
+    decoder_chunk_look_back: int = Form(0, description="解码器回看块数，默认 0；一般不用改"),
+    hotwords: str = Form("", description="热词；没有可留空"),
 ):
     session_id = uuid.uuid4().hex
     chunks = parse_chunk_size(chunk_size)
@@ -354,8 +400,12 @@ async def create_session(
     return {"session_id": session_id, "backend": backend_ws}
 
 
-@app.get("/asr/sse/{session_id}")
-async def session_sse(session_id: str):
+@app.get(
+    "/asr/sse/{session_id}",
+    summary="订阅实时识别 SSE 结果",
+    description="订阅指定会话的 SSE 识别结果。客户端应保持连接，服务端会持续返回 online/final/error/done 等事件。",
+)
+async def session_sse(session_id: str = Path(..., description="通过 POST /asr/session 创建得到的会话 ID")):
     session = sessions.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -376,8 +426,15 @@ async def session_sse(session_id: str):
     return StreamingResponse(events(), media_type="text/event-stream", headers=SSE_HEADERS)
 
 
-@app.post("/asr/chunk/{session_id}")
-async def send_chunk(session_id: str, request: Request):
+@app.post(
+    "/asr/chunk/{session_id}",
+    summary="推送二进制音频分片",
+    description="向指定会话推送一段二进制 PCM 音频分片。请求体直接放原始音频 bytes，不是 JSON。",
+)
+async def send_chunk(
+    request: Request,
+    session_id: str = Path(..., description="通过 POST /asr/session 创建得到的会话 ID"),
+):
     session = sessions.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -388,7 +445,11 @@ async def send_chunk(session_id: str, request: Request):
     return {"ok": True, "bytes": len(data)}
 
 
-@app.post("/asr/chunk-b64/{session_id}")
+@app.post(
+    "/asr/chunk-b64/{session_id}",
+    summary="推送 Base64 音频分片",
+    description="向指定会话推送一段 Base64 音频分片。适合前端实时采集音频后按片段上传的场景。",
+)
 async def send_chunk_base64(session_id: str, request: Base64ChunkRequest):
     session = sessions.get(session_id)
     if session is None:
@@ -398,8 +459,12 @@ async def send_chunk_base64(session_id: str, request: Base64ChunkRequest):
     return {"ok": True, "bytes": len(data)}
 
 
-@app.post("/asr/end/{session_id}")
-async def end_session(session_id: str):
+@app.post(
+    "/asr/end/{session_id}",
+    summary="结束实时识别会话",
+    description="通知服务端当前会话的音频已经发送完毕。调用后后端会输出剩余识别结果并结束 SSE 流。",
+)
+async def end_session(session_id: str = Path(..., description="通过 POST /asr/session 创建得到的会话 ID")):
     session = sessions.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
