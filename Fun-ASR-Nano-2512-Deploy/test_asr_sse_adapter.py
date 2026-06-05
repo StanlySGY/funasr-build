@@ -4,11 +4,13 @@ import unittest
 from unittest.mock import patch
 
 from fastapi import HTTPException
+from websockets.exceptions import InvalidMessage
 
 from asr_sse_adapter import (
     AsrSession,
     Base64ChunkRequest,
     app,
+    connect_backend,
     create_session,
     decode_audio_base64,
     send_chunk_base64,
@@ -126,6 +128,27 @@ class DecodeAudioBase64Test(unittest.TestCase):
 
         self.assertEqual(503, context.exception.status_code)
         self.assertEqual("backend loading", context.exception.detail)
+
+    def test_connect_backend_retries_invalid_handshake_response(self):
+        calls = []
+        websocket = FakeWebSocket()
+
+        async def flaky_connect(*args, **kwargs):
+            calls.append((args, kwargs))
+            if len(calls) == 1:
+                raise InvalidMessage("did not receive a valid HTTP response")
+            return websocket
+
+        async def no_sleep(delay):
+            return None
+
+        with patch("asr_sse_adapter.DEFAULT_BACKEND_CONNECT_RETRIES", 2), \
+             patch("asr_sse_adapter.websockets.connect", flaky_connect), \
+             patch("asr_sse_adapter.asyncio.sleep", no_sleep):
+            result = asyncio.run(connect_backend())
+
+        self.assertIs(websocket, result)
+        self.assertEqual(2, len(calls))
 
 
 if __name__ == "__main__":

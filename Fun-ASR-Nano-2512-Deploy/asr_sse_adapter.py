@@ -13,6 +13,7 @@ from typing import Any
 
 import uvicorn
 import websockets
+from websockets.exceptions import InvalidHandshake, InvalidMessage
 from fastapi import FastAPI, File, Form, HTTPException, Path, Request, UploadFile
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -23,6 +24,7 @@ DEFAULT_BACKEND_CONNECT_DELAY = float(os.environ.get("FUNASR_BACKEND_CONNECT_DEL
 TARGET_SAMPLE_RATE = int(os.environ.get("FUNASR_TARGET_SAMPLE_RATE", "16000"))
 DEFAULT_CHUNK_SIZE = [5, 10, 5]
 DEFAULT_CHUNK_INTERVAL = 10
+BACKEND_CONNECT_EXCEPTIONS = (OSError, EOFError, InvalidHandshake, InvalidMessage)
 
 SSE_HEADERS = {
     "Cache-Control": "no-cache",
@@ -190,7 +192,7 @@ async def connect_backend():
     for attempt in range(1, DEFAULT_BACKEND_CONNECT_RETRIES + 1):
         try:
             return await websockets.connect(backend_ws, subprotocols=["binary"], ping_interval=None)
-        except OSError as exc:
+        except BACKEND_CONNECT_EXCEPTIONS as exc:
             last_error = exc
             if attempt >= DEFAULT_BACKEND_CONNECT_RETRIES:
                 break
