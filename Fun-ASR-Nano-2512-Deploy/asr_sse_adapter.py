@@ -77,6 +77,8 @@ class AsrSession:
     queue: asyncio.Queue = field(default_factory=asyncio.Queue)
     recv_task: asyncio.Task | None = None
     ending: bool = False
+    chunk_stride_bytes: int | None = None
+    pending_audio: bytearray = field(default_factory=bytearray)
 
 
 class Base64AsrRequest(BaseModel):
@@ -227,6 +229,24 @@ async def cleanup_session(session_id: str) -> None:
         await session.websocket.close()
     except Exception:
         pass
+
+
+async def send_session_audio(session: AsrSession, data: bytes) -> None:
+    stride = session.chunk_stride_bytes
+    if not stride or stride <= 0:
+        await session.websocket.send(data)
+        return
+    session.pending_audio.extend(data)
+    while len(session.pending_audio) >= stride:
+        frame = bytes(session.pending_audio[:stride])
+        del session.pending_audio[:stride]
+        await session.websocket.send(frame)
+
+
+async def flush_session_audio(session: AsrSession) -> None:
+    if session.pending_audio:
+        await session.websocket.send(bytes(session.pending_audio))
+        session.pending_audio.clear()
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
@@ -413,7 +433,7 @@ async def create_session(
             hotwords=hotwords,
         )
     )
-    session = AsrSession(websocket=ws)
+    session = AsrSession(websocket=ws, chunk_stride_bytes=chunk_stride(audio_fs, chunks, chunk_interval))
     session.recv_task = asyncio.create_task(receive_to_queue(ws, session.queue))
     sessions[session_id] = session
     return {"session_id": session_id, "backend": backend_ws}
@@ -462,7 +482,7 @@ async def send_chunk(
     data = await request.body()
     if not data:
         raise HTTPException(status_code=400, detail="Empty audio chunk")
-    await session.websocket.send(data)
+    await send_session_audio(session, data)
     return {"ok": True, "bytes": len(data)}
 
 
@@ -476,7 +496,7 @@ async def send_chunk_base64(session_id: str, request: Base64ChunkRequest):
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
     data = decode_audio_base64(request.audio_base64)
-    await session.websocket.send(data)
+    await send_session_audio(session, data)
     return {"ok": True, "bytes": len(data)}
 
 
@@ -490,6 +510,7 @@ async def end_session(session_id: str = Path(..., description="通过 POST /asr/
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
     session.ending = True
+    await flush_session_audio(session)
     await session.websocket.send(json.dumps({"is_speaking": False}))
     return {"ok": True}
 

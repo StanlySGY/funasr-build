@@ -13,6 +13,7 @@ from asr_sse_adapter import (
     connect_backend,
     create_session,
     decode_audio_base64,
+    end_session,
     send_chunk_base64,
     session_sse,
     sessions,
@@ -80,6 +81,41 @@ class DecodeAudioBase64Test(unittest.TestCase):
 
         self.assertEqual([expected], websocket.sent)
         self.assertEqual({"ok": True, "bytes": len(expected)}, response)
+
+    def test_splits_realtime_base64_chunk_to_backend_stride(self):
+        session_id = "chunk-split-test"
+        websocket = FakeWebSocket()
+        payload = b"abcdefg"
+        encoded = base64.b64encode(payload).decode("ascii")
+        session = AsrSession(websocket=websocket, chunk_stride_bytes=3)
+        sessions[session_id] = session
+
+        try:
+            response = asyncio.run(
+                send_chunk_base64(session_id, Base64ChunkRequest(audio_base64=encoded))
+            )
+        finally:
+            sessions.pop(session_id, None)
+
+        self.assertEqual([b"abc", b"def"], websocket.sent)
+        self.assertEqual(bytearray(b"g"), session.pending_audio)
+        self.assertEqual({"ok": True, "bytes": len(payload)}, response)
+
+    def test_end_session_flushes_pending_realtime_audio(self):
+        session_id = "chunk-flush-test"
+        websocket = FakeWebSocket()
+        session = AsrSession(websocket=websocket, chunk_stride_bytes=3)
+        session.pending_audio.extend(b"tail")
+        sessions[session_id] = session
+
+        try:
+            response = asyncio.run(end_session(session_id))
+        finally:
+            sessions.pop(session_id, None)
+
+        self.assertEqual(b"tail", websocket.sent[0])
+        self.assertIn('"is_speaking": false', websocket.sent[1])
+        self.assertEqual({"ok": True}, response)
 
     def test_session_sse_suppresses_expected_backend_close_after_end(self):
         async def collect_events():
