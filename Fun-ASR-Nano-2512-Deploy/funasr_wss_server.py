@@ -169,11 +169,14 @@ async def run_model_inference(model, input, **kwargs):
         推理结果
     """
     loop = asyncio.get_running_loop()
-    # 使用线程池执行同步的 blocking generate 方法
-    return await loop.run_in_executor(
-        inference_executor, 
-        lambda: model.generate(input=input, **kwargs)
-    )
+    try:
+        # 使用线程池执行同步的 blocking generate 方法
+        return await loop.run_in_executor(
+            inference_executor,
+            lambda: model.generate(input=input, **kwargs)
+        )
+    except SystemExit as exc:
+        raise RuntimeError(f"Model inference attempted to exit process: {exc.code}") from exc
 
 def decode_audio_chunk(chunk_bytes):
     """
@@ -358,6 +361,9 @@ async def ws_serve(websocket, path=None):
 
     except websockets.ConnectionClosed:
         print("连接已关闭。", websocket_users, flush=True)
+    except SystemExit as e:
+        print(f"SystemExit ignored in websocket handler: {e}", flush=True)
+        traceback.print_exc()
     except Exception as e:
         print("Exception:", e)
         import traceback
