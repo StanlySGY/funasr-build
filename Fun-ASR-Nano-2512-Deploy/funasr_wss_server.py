@@ -29,6 +29,7 @@ import os
 import numpy as np
 import torch
 import traceback
+from contextlib import suppress
 from concurrent.futures import ThreadPoolExecutor
 # 需要引下这个，不然会报错AssertionError: FunASRNano is not registered
 # issue见：https://github.com/modelscope/FunASR/issues/2741
@@ -208,7 +209,8 @@ async def ws_reset(websocket):
     if hasattr(websocket, "status_dict_punc"):
         websocket.status_dict_punc["cache"] = {}
     
-    await websocket.close()
+    with suppress(Exception):
+        await websocket.close()
 
 
 async def clear_websocket():
@@ -356,13 +358,14 @@ async def ws_serve(websocket, path=None):
 
     except websockets.ConnectionClosed:
         print("连接已关闭。", websocket_users, flush=True)
-        await ws_reset(websocket)
-        if websocket in websocket_users:
-            websocket_users.remove(websocket)
     except Exception as e:
         print("Exception:", e)
         import traceback
         traceback.print_exc()
+    finally:
+        if websocket in websocket_users:
+            websocket_users.remove(websocket)
+        await ws_reset(websocket)
 
 
 async def async_vad(websocket, audio_in):

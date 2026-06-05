@@ -395,7 +395,10 @@ async def create_session(
 ):
     session_id = uuid.uuid4().hex
     chunks = parse_chunk_size(chunk_size)
-    ws = await connect_backend()
+    try:
+        ws = await connect_backend()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     await ws.send(
         build_init_message(
             mode=mode,

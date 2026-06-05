@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import unittest
+from unittest.mock import patch
 
 from fastapi import HTTPException
 
@@ -8,6 +9,7 @@ from asr_sse_adapter import (
     AsrSession,
     Base64ChunkRequest,
     app,
+    create_session,
     decode_audio_base64,
     send_chunk_base64,
     session_sse,
@@ -103,6 +105,27 @@ class DecodeAudioBase64Test(unittest.TestCase):
         self.assertNotIn('no close frame', body)
         self.assertTrue(closed)
         self.assertFalse(session_exists)
+
+    def test_create_session_returns_503_when_backend_is_not_ready(self):
+        async def fail_connect_backend():
+            raise RuntimeError("backend loading")
+
+        with patch("asr_sse_adapter.connect_backend", fail_connect_backend):
+            with self.assertRaises(HTTPException) as context:
+                asyncio.run(
+                    create_session(
+                        mode="online",
+                        audio_fs=16000,
+                        chunk_size="5,10,5",
+                        chunk_interval=10,
+                        encoder_chunk_look_back=4,
+                        decoder_chunk_look_back=0,
+                        hotwords="",
+                    )
+                )
+
+        self.assertEqual(503, context.exception.status_code)
+        self.assertEqual("backend loading", context.exception.detail)
 
 
 if __name__ == "__main__":

@@ -54,6 +54,8 @@ services:
       - HOST=0.0.0.0
       - PORT=10098
       - FUNASR_BACKEND_WS=ws://127.0.0.1:10095
+      - FUNASR_BACKEND_CONNECT_RETRIES=180
+      - FUNASR_BACKEND_CONNECT_DELAY=1
       - FUNASR_TARGET_SAMPLE_RATE=16000
     restart: unless-stopped
     healthcheck:
