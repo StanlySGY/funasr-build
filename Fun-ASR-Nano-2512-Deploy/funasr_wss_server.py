@@ -38,9 +38,10 @@ from funasr import AutoModel
 
 logging.basicConfig(level=logging.ERROR)
 
-# 全局线程池，用于并发执行模型推理，避免阻塞 asyncio 事件循环
-# 建议设置为预期的最大并发数，例如 10
-inference_executor = ThreadPoolExecutor(max_workers=10)
+# 全局线程池，用于执行模型推理，避免阻塞 asyncio 事件循环。
+# ARM CPU 上共享 AutoModel 并发推理容易触发底层库异常退出，默认串行保证稳定。
+INFERENCE_WORKERS = int(os.environ.get("FUNASR_INFERENCE_WORKERS", "1"))
+inference_executor = ThreadPoolExecutor(max_workers=INFERENCE_WORKERS)
 
 def get_args():
     """

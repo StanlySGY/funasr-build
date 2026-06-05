@@ -14,6 +14,7 @@ services:
       - NCPU=4
       - MODEL_PATH=/app/funasr-deploy/models/hub/models/FunAudioLLM/Fun-ASR-Nano-2512
       - MODELSCOPE_CACHE=/app/funasr-deploy/models
+      - FUNASR_INFERENCE_WORKERS=1
     volumes:
       - /data/maas/sgy_arm/fun-asr-nano/models:/app/funasr-deploy/models
       - ./Fun-ASR-Nano-2512-Deploy/asr_logs:/app/funasr-deploy/asr_logs
