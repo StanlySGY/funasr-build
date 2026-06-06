@@ -31,8 +31,8 @@ DIAGNOSTIC_LOG_PATH = os.environ.get(
     "FUNASR_DIAGNOSTIC_LOG",
     "/app/funasr-deploy/asr_logs/web_diagnostic.log",
 )
-DIAGNOSTIC_TIMEOUT_SEC = float(os.environ.get("FUNASR_DIAGNOSTIC_TIMEOUT_SEC", "60"))
-DIAGNOSTIC_END_WAIT_SEC = float(os.environ.get("FUNASR_DIAGNOSTIC_END_WAIT_SEC", "8"))
+DIAGNOSTIC_TIMEOUT_SEC = float(os.environ.get("FUNASR_DIAGNOSTIC_TIMEOUT_SEC", "120"))
+DIAGNOSTIC_END_WAIT_SEC = float(os.environ.get("FUNASR_DIAGNOSTIC_END_WAIT_SEC", "35"))
 
 SSE_HEADERS = {
     "Cache-Control": "no-cache",

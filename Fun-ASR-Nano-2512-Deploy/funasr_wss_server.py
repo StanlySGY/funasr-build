@@ -142,6 +142,8 @@ _enable_diagnostics()
 # 全局线程池配置，用于执行模型推理，避免阻塞 asyncio 事件循环。
 # ARM CPU 上共享 AutoModel 并发推理容易触发底层库异常退出，默认串行保证稳定。
 INFERENCE_WORKERS = int(os.environ.get("FUNASR_INFERENCE_WORKERS", "1"))
+DISABLE_OFFLINE_INFERENCE = os.environ.get("FUNASR_DISABLE_OFFLINE_INFERENCE", "0").lower() in {"1", "true", "yes", "on"}
+OFFLINE_MODES = {"2pass", "offline"}
 
 def get_args():
     """
@@ -212,6 +214,7 @@ diag(
     ncpu=args.ncpu,
     fp16=args.fp16,
     inference_workers=INFERENCE_WORKERS,
+    disable_offline_inference=DISABLE_OFFLINE_INFERENCE,
     asr_model=args.asr_model,
     vad_model=args.vad_model,
     punc_model=args.punc_model,
@@ -445,7 +448,7 @@ async def ws_serve(websocket, path=None):
     speech_start = False
     speech_end_i = -1
     websocket.wav_name = "microphone"
-    websocket.mode = "2pass"
+    websocket.mode = "online" if DISABLE_OFFLINE_INFERENCE else "2pass"
     websocket.is_speaking = True
     
     print("new user connected", flush=True)
@@ -488,7 +491,18 @@ async def ws_serve(websocket, path=None):
                     if "hotwords" in messagejson:
                         websocket.status_dict_asr["hotword"] = messagejson["hotwords"]
                     if "mode" in messagejson:
-                        websocket.mode = messagejson["mode"]
+                        requested_mode = messagejson["mode"]
+                        if DISABLE_OFFLINE_INFERENCE and requested_mode in OFFLINE_MODES:
+                            websocket.mode = "online"
+                            diag(
+                                "offline_mode_disabled",
+                                session_id=websocket.diag_session_id,
+                                requested_mode=requested_mode,
+                                effective_mode=websocket.mode,
+                                reason="FUNASR_DISABLE_OFFLINE_INFERENCE",
+                            )
+                        else:
+                            websocket.mode = requested_mode
                 except Exception as e:
                     print("JSON error:", e)
                     diag(
