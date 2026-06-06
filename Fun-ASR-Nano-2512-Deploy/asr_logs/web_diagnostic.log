@@ -1,0 +1,12 @@
+{"ts": "2026-06-06T09:00:44+08:00", "run_id": "2d01356d6918", "event": "run_start", "filename": "example4.wav", "modes": ["online", "2pass"], "sample_rate": 16000, "bytes": 85582, "backend": "ws://127.0.0.1:10095"}
+{"ts": "2026-06-06T09:00:44+08:00", "run_id": "2d01356d6918", "event": "mode_start", "mode": "online", "bytes": 85582}
+{"ts": "2026-06-06T09:01:00+08:00", "run_id": "2d01356d6918", "event": "mode_end", "mode": "online", "status": "timeout", "elapsed_ms": 16220.814}
+{"ts": "2026-06-06T09:01:00+08:00", "run_id": "2d01356d6918", "event": "mode_start", "mode": "2pass", "bytes": 85582}
+{"ts": "2026-06-06T09:01:19+08:00", "run_id": "2d01356d6918", "event": "mode_end", "mode": "2pass", "status": "timeout", "elapsed_ms": 18478.279}
+{"ts": "2026-06-06T09:01:19+08:00", "run_id": "2d01356d6918", "event": "run_end", "results": [{"mode": "online", "status": "timeout", "events": [], "elapsed_ms": 16220.814}, {"mode": "2pass", "status": "timeout", "events": [], "elapsed_ms": 18478.279}]}
+{"ts": "2026-06-06T09:28:44+08:00", "run_id": "baf1f95ca3f0", "event": "run_start", "filename": "example4.wav", "modes": ["online", "2pass"], "sample_rate": 16000, "bytes": 85582, "backend": "ws://127.0.0.1:10095"}
+{"ts": "2026-06-06T09:28:44+08:00", "run_id": "baf1f95ca3f0", "event": "mode_start", "mode": "online", "bytes": 85582}
+{"ts": "2026-06-06T09:29:01+08:00", "run_id": "baf1f95ca3f0", "event": "mode_end", "mode": "online", "status": "timeout", "elapsed_ms": 16896.935}
+{"ts": "2026-06-06T09:29:01+08:00", "run_id": "baf1f95ca3f0", "event": "mode_start", "mode": "2pass", "bytes": 85582}
+{"ts": "2026-06-06T09:29:20+08:00", "run_id": "baf1f95ca3f0", "event": "mode_end", "mode": "2pass", "status": "timeout", "elapsed_ms": 18479.435}
+{"ts": "2026-06-06T09:29:20+08:00", "run_id": "baf1f95ca3f0", "event": "run_end", "results": [{"mode": "online", "status": "timeout", "events": [], "elapsed_ms": 16896.935}, {"mode": "2pass", "status": "timeout", "events": [], "elapsed_ms": 18479.435}]}
