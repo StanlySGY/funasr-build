@@ -5,10 +5,12 @@ import base64
 import binascii
 import json
 import os
+import time
 import uuid
 import wave
 from contextlib import suppress
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 import uvicorn
@@ -25,6 +27,12 @@ TARGET_SAMPLE_RATE = int(os.environ.get("FUNASR_TARGET_SAMPLE_RATE", "16000"))
 DEFAULT_CHUNK_SIZE = [5, 10, 5]
 DEFAULT_CHUNK_INTERVAL = 10
 BACKEND_CONNECT_EXCEPTIONS = (OSError, EOFError, InvalidHandshake, InvalidMessage)
+DIAGNOSTIC_LOG_PATH = os.environ.get(
+    "FUNASR_DIAGNOSTIC_LOG",
+    "/app/funasr-deploy/asr_logs/web_diagnostic.log",
+)
+DIAGNOSTIC_TIMEOUT_SEC = float(os.environ.get("FUNASR_DIAGNOSTIC_TIMEOUT_SEC", "60"))
+DIAGNOSTIC_END_WAIT_SEC = float(os.environ.get("FUNASR_DIAGNOSTIC_END_WAIT_SEC", "8"))
 
 SSE_HEADERS = {
     "Cache-Control": "no-cache",
@@ -95,6 +103,40 @@ class Base64AsrRequest(BaseModel):
 
 class Base64ChunkRequest(BaseModel):
     audio_base64: str = Field(..., description="单个音频分片的 Base64 字符串，支持纯 Base64 或 data:audio/...;base64,... 格式")
+
+
+def utc_now_text() -> str:
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def append_diagnostic_log(entry: dict) -> dict:
+    payload = {"ts": utc_now_text(), **entry}
+    log_dir = os.path.dirname(DIAGNOSTIC_LOG_PATH)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+    with open(DIAGNOSTIC_LOG_PATH, "a", encoding="utf-8") as log_file:
+        log_file.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+    return payload
+
+
+def read_diagnostic_log_tail(limit: int = 200) -> list[str]:
+    if not os.path.exists(DIAGNOSTIC_LOG_PATH):
+        return []
+    with open(DIAGNOSTIC_LOG_PATH, encoding="utf-8") as log_file:
+        lines = log_file.readlines()
+    return [line.rstrip("\n") for line in lines[-max(1, min(limit, 2000)):]]
+
+
+def normalize_diagnostic_modes(value: str) -> list[str]:
+    modes = []
+    for item in value.split(","):
+        mode = item.strip()
+        if not mode:
+            continue
+        if mode not in {"online", "2pass", "offline"}:
+            raise HTTPException(status_code=400, detail=f"Unsupported diagnostic mode: {mode}")
+        modes.append(mode)
+    return modes or ["online", "2pass"]
 
 
 def parse_chunk_size(value: str | list[int]) -> list[int]:
@@ -185,6 +227,104 @@ def event_name(message: dict) -> str:
     return "message"
 
 
+def compact_backend_message(data: dict) -> dict:
+    compact = {}
+    for key in ("mode", "is_final", "text", "text_tn", "wav_name"):
+        if key in data:
+            compact[key] = data[key]
+    if "message" in data:
+        compact["message"] = data["message"]
+    return compact or data
+
+
+async def run_diagnostic_mode(
+    *,
+    run_id: str,
+    mode: str,
+    audio_bytes: bytes,
+    sample_rate: int,
+    chunk_size: list[int],
+    chunk_interval: int,
+    chunk_delay_ms: int,
+    hotwords: str,
+) -> dict:
+    started = time.time()
+    wav_name = f"diagnostic-{run_id}-{mode}"
+    result = {
+        "mode": mode,
+        "status": "running",
+        "events": [],
+        "elapsed_ms": None,
+    }
+    queue: asyncio.Queue = asyncio.Queue()
+    recv_task = None
+    ws = None
+    append_diagnostic_log({"run_id": run_id, "event": "mode_start", "mode": mode, "bytes": len(audio_bytes)})
+    try:
+        ws = await connect_backend()
+        await ws.send(
+            build_init_message(
+                mode=mode,
+                chunk_size=chunk_size,
+                chunk_interval=chunk_interval,
+                audio_fs=sample_rate,
+                wav_name=wav_name,
+                encoder_chunk_look_back=4,
+                decoder_chunk_look_back=0,
+                hotwords=hotwords,
+            )
+        )
+        recv_task = asyncio.create_task(receive_to_queue(ws, queue))
+        stride = chunk_stride(sample_rate, chunk_size, chunk_interval)
+        delay_sec = max(0, min(chunk_delay_ms, 1000)) / 1000
+        for start in range(0, len(audio_bytes), stride):
+            await ws.send(audio_bytes[start:start + stride])
+            if delay_sec:
+                await asyncio.sleep(delay_sec)
+        await ws.send(json.dumps({"is_speaking": False}))
+
+        while time.time() - started < DIAGNOSTIC_TIMEOUT_SEC:
+            try:
+                event, data = await asyncio.wait_for(queue.get(), timeout=DIAGNOSTIC_END_WAIT_SEC)
+            except asyncio.TimeoutError:
+                result["status"] = "timeout"
+                break
+            compact = compact_backend_message(data)
+            result["events"].append({"event": event, "data": compact})
+            append_diagnostic_log({"run_id": run_id, "event": "backend_event", "mode": mode, "name": event, "data": compact})
+            if event == "error":
+                result["status"] = "error"
+                break
+            if event == "online" and mode == "online":
+                result["status"] = "ok"
+                break
+            if event == "done":
+                result["status"] = "ok"
+                break
+            if event == "final" and mode in {"2pass", "offline"}:
+                result["status"] = "ok"
+                break
+        else:
+            result["status"] = "timeout"
+    except Exception as exc:
+        result["status"] = "error"
+        result["events"].append({"event": "exception", "data": {"message": str(exc)}})
+        append_diagnostic_log(
+            {"run_id": run_id, "event": "mode_exception", "mode": mode, "exc_type": type(exc).__name__, "message": str(exc)}
+        )
+    finally:
+        if recv_task:
+            recv_task.cancel()
+        if ws is not None:
+            with suppress(Exception):
+                await ws.close()
+        result["elapsed_ms"] = round((time.time() - started) * 1000, 3)
+        append_diagnostic_log(
+            {"run_id": run_id, "event": "mode_end", "mode": mode, "status": result["status"], "elapsed_ms": result["elapsed_ms"]}
+        )
+    return result
+
+
 def is_backend_close_without_frame(event: str, data: dict) -> bool:
     return event == "error" and "no close frame" in data.get("message", "")
 
@@ -262,6 +402,67 @@ async def frontend_index():
 @app.get("/health", summary="健康检查", description="检查 SSE 适配器是否启动，并返回当前后端 WebSocket 地址和会话数量。")
 async def health():
     return {"status": "ok", "backend": backend_ws, "sessions": len(sessions)}
+
+
+@app.get(
+    "/diagnostics/log",
+    summary="读取 Web 诊断日志",
+    description="读取固定诊断日志文件尾部内容，便于把诊断结果提交到 GitHub 后远程分析。",
+)
+async def diagnostic_log(limit: int = 200):
+    return {"log_path": DIAGNOSTIC_LOG_PATH, "lines": read_diagnostic_log_tail(limit)}
+
+
+@app.post(
+    "/diagnostics/realtime-ab",
+    summary="一键实时识别 A/B 诊断",
+    description="上传同一段音频，自动依次跑 online/2pass 等模式，并把每步结果写入固定日志文件。",
+)
+async def realtime_ab_diagnostic(
+    file: UploadFile = File(..., description="用于诊断的音频文件；推荐真人语音 WAV"),
+    modes: str = Form("online,2pass", description="逗号分隔的诊断模式，默认 online,2pass"),
+    chunk_delay_ms: int = Form(10, description="每个后端分片发送后的等待毫秒数，默认 10"),
+    hotwords: str = Form("", description="热词；没有可留空"),
+):
+    run_id = uuid.uuid4().hex[:12]
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty diagnostic audio file")
+    mode_list = normalize_diagnostic_modes(modes)
+    try:
+        audio_bytes, sample_rate = read_audio_payload(file.filename or "diagnostic.wav", raw, TARGET_SAMPLE_RATE)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid diagnostic audio file: {exc}") from exc
+
+    append_diagnostic_log(
+        {
+            "run_id": run_id,
+            "event": "run_start",
+            "filename": file.filename,
+            "modes": mode_list,
+            "sample_rate": sample_rate,
+            "bytes": len(audio_bytes),
+            "backend": backend_ws,
+        }
+    )
+    results = []
+    for mode in mode_list:
+        results.append(
+            await run_diagnostic_mode(
+                run_id=run_id,
+                mode=mode,
+                audio_bytes=audio_bytes,
+                sample_rate=sample_rate,
+                chunk_size=DEFAULT_CHUNK_SIZE,
+                chunk_interval=DEFAULT_CHUNK_INTERVAL,
+                chunk_delay_ms=chunk_delay_ms,
+                hotwords=hotwords,
+            )
+        )
+    append_diagnostic_log({"run_id": run_id, "event": "run_end", "results": results})
+    return {"run_id": run_id, "log_path": DIAGNOSTIC_LOG_PATH, "results": results}
 
 
 def build_audio_sse_response(

@@ -618,6 +618,7 @@
         <button class="nav-item active" type="button" data-pane="filePane"><span class="nav-dot"></span>文件识别</button>
         <button class="nav-item" type="button" data-pane="base64Pane"><span class="nav-dot"></span>完整 Base64</button>
         <button class="nav-item" type="button" data-pane="streamPane"><span class="nav-dot"></span>实时分片流</button>
+        <button class="nav-item" type="button" data-pane="diagnosticPane"><span class="nav-dot"></span>一键诊断</button>
       </div>
 
       <div class="nav-group">
@@ -639,6 +640,7 @@
         </div>
         <div class="top-actions">
           <button id="healthBtn" class="btn secondary" type="button">刷新状态</button>
+          <button id="diagnosticLogBtn" class="btn" type="button">读取诊断日志</button>
           <button id="clearBtn" class="btn" type="button">清空事件</button>
         </div>
       </header>
@@ -676,6 +678,7 @@
               <button class="mode-btn active" type="button" data-pane="filePane">文件</button>
               <button class="mode-btn" type="button" data-pane="base64Pane">Base64</button>
               <button class="mode-btn" type="button" data-pane="streamPane">实时流</button>
+              <button class="mode-btn" type="button" data-pane="diagnosticPane">诊断</button>
             </div>
 
             <section id="filePane" class="pane active">
@@ -778,6 +781,41 @@
                 <button id="streamStop" class="btn warning" type="button" disabled>结束当前会话</button>
               </div>
             </section>
+
+            <section id="diagnosticPane" class="pane">
+              <div class="callout">一键运行 online 与 2pass A/B 诊断，并把诊断过程写入固定日志文件。</div>
+              <div class="form-grid">
+                <div class="field full">
+                  <label for="diagnosticFile">诊断音频文件</label>
+                  <input id="diagnosticFile" type="file" accept="audio/*,.wav,.pcm" />
+                </div>
+                <div class="field">
+                  <label for="diagnosticModes">诊断模式</label>
+                  <select id="diagnosticModes">
+                    <option value="online,2pass">online + 2pass</option>
+                    <option value="online">仅 online</option>
+                    <option value="2pass">仅 2pass</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="diagnosticChunkDelay">分片间隔 ms</label>
+                  <input id="diagnosticChunkDelay" type="number" value="10" min="0" max="1000" step="10" />
+                </div>
+                <div class="field full">
+                  <label for="diagnosticHotwords">热词</label>
+                  <input id="diagnosticHotwords" placeholder="没有热词可留空" />
+                </div>
+              </div>
+              <p class="helper">推荐选择真人语音 WAV。若 2pass 触发底层崩溃，页面可能只收到连接异常；固定日志会保留诊断结果。</p>
+              <details class="request-preview">
+                <summary>固定日志文件</summary>
+                <pre>/app/funasr-deploy/asr_logs/web_diagnostic.log
+/app/funasr-deploy/asr_logs/funasr_ws_diag.log</pre>
+              </details>
+              <div class="actions">
+                <button id="diagnosticRun" class="btn primary" type="button">一键诊断</button>
+              </div>
+            </section>
           </div>
         </section>
 
@@ -822,12 +860,14 @@
       backendWs: document.querySelector('#backendWs'),
       sessionCount: document.querySelector('#sessionCount'),
       healthBtn: document.querySelector('#healthBtn'),
+      diagnosticLogBtn: document.querySelector('#diagnosticLogBtn'),
       clearBtn: document.querySelector('#clearBtn'),
       copyTextBtn: document.querySelector('#copyTextBtn'),
       fileRun: document.querySelector('#fileRun'),
       base64Run: document.querySelector('#base64Run'),
       streamRun: document.querySelector('#streamRun'),
       streamStop: document.querySelector('#streamStop'),
+      diagnosticRun: document.querySelector('#diagnosticRun'),
     };
 
     els.apiBase.textContent = apiBase;
@@ -893,6 +933,20 @@
         els.backendWs.textContent = '-';
         setStatus('error', '异常');
         addEvent('error', `健康检查失败：${error.message}`);
+      }
+    }
+
+    async function loadDiagnosticLog() {
+      try {
+        const response = await fetch('/diagnostics/log?limit=120');
+        if (!response.ok) throw new Error(await response.text());
+        const data = await response.json();
+        addEvent('diagnostic-log', {
+          log_path: data.log_path,
+          lines: data.lines,
+        });
+      } catch (error) {
+        addEvent('error', `读取诊断日志失败：${error.message}`);
       }
     }
 
@@ -1134,6 +1188,30 @@
       }
     }
 
+    async function runDiagnostic() {
+      const file = document.querySelector('#diagnosticFile').files[0];
+      if (!file) return addEvent('error', '请先选择诊断音频文件');
+      clearEvents(`一键诊断开始：${file.name}`);
+      setBusy(els.diagnosticRun, true, '诊断中');
+      try {
+        const form = new FormData();
+        form.append('file', file, file.name);
+        form.append('modes', formValue('diagnosticModes', 'online,2pass'));
+        form.append('chunk_delay_ms', formValue('diagnosticChunkDelay', '10'));
+        form.append('hotwords', formValue('diagnosticHotwords', ''));
+        const response = await fetch('/diagnostics/realtime-ab', { method: 'POST', body: form });
+        if (!response.ok) throw new Error(await response.text());
+        const result = await response.json();
+        addEvent('diagnostic', result);
+        await loadDiagnosticLog();
+      } catch (error) {
+        addEvent('error', error.message);
+      } finally {
+        setBusy(els.diagnosticRun, false);
+        checkHealth();
+      }
+    }
+
     function showPane(paneId) {
       document.querySelectorAll('.pane').forEach((pane) => pane.classList.toggle('active', pane.id === paneId));
       document.querySelectorAll('.nav-item[data-pane], .mode-btn').forEach((item) => {
@@ -1146,6 +1224,7 @@
     });
 
     els.healthBtn.addEventListener('click', checkHealth);
+    els.diagnosticLogBtn.addEventListener('click', loadDiagnosticLog);
     els.clearBtn.addEventListener('click', () => clearEvents('事件面板已清空。'));
     els.copyTextBtn.addEventListener('click', async () => {
       const text = state.textParts.join('\n');
@@ -1156,6 +1235,7 @@
     els.fileRun.addEventListener('click', runFileSse);
     els.base64Run.addEventListener('click', runBase64Sse);
     els.streamRun.addEventListener('click', runStreamSimulation);
+    els.diagnosticRun.addEventListener('click', runDiagnostic);
     els.streamStop.addEventListener('click', async () => {
       try { await endCurrentSession(); } catch (error) { addEvent('error', error.message); }
     });

@@ -15,6 +15,7 @@ services:
       - NCPU=4
       - MODEL_PATH=/app/funasr-deploy/models/FunAudioLLM/Fun-ASR-Nano-2512
       - MODELSCOPE_CACHE=/app/funasr-deploy/models
+      - FUNASR_WS_DIAG_LOG=/app/funasr-deploy/asr_logs/funasr_ws_diag.log
     volumes:
       - ./Fun-ASR-Nano-2512-Deploy/models:/app/funasr-deploy/models
       - ./Fun-ASR-Nano-2512-Deploy/asr_logs:/app/funasr-deploy/asr_logs
@@ -35,4 +36,7 @@ services:
       - HOST=0.0.0.0
       - PORT=10097
       - FUNASR_BACKEND_WS=ws://funasr-ws:10095
+      - FUNASR_DIAGNOSTIC_LOG=/app/funasr-deploy/asr_logs/web_diagnostic.log
+    volumes:
+      - ./Fun-ASR-Nano-2512-Deploy/asr_logs:/app/funasr-deploy/asr_logs
     restart: unless-stopped

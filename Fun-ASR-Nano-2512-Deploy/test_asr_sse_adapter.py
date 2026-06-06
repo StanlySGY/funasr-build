@@ -1,5 +1,7 @@
 import asyncio
 import base64
+import os
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -9,11 +11,14 @@ from websockets.exceptions import InvalidMessage
 from asr_sse_adapter import (
     AsrSession,
     Base64ChunkRequest,
+    append_diagnostic_log,
     app,
     connect_backend,
     create_session,
     decode_audio_base64,
     end_session,
+    normalize_diagnostic_modes,
+    read_diagnostic_log_tail,
     send_chunk_base64,
     session_sse,
     sessions,
@@ -64,6 +69,33 @@ class DecodeAudioBase64Test(unittest.TestCase):
         paths = {route.path for route in app.routes}
 
         self.assertIn("/asr/chunk-b64/{session_id}", paths)
+
+    def test_registers_diagnostic_routes(self):
+        paths = {route.path for route in app.routes}
+
+        self.assertIn("/diagnostics/realtime-ab", paths)
+        self.assertIn("/diagnostics/log", paths)
+
+    def test_normalizes_diagnostic_modes(self):
+        self.assertEqual(["online", "2pass"], normalize_diagnostic_modes("online, 2pass"))
+
+    def test_rejects_unknown_diagnostic_mode(self):
+        with self.assertRaises(HTTPException) as context:
+            normalize_diagnostic_modes("online,bad")
+
+        self.assertEqual(400, context.exception.status_code)
+
+    def test_appends_and_reads_diagnostic_log_tail(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = os.path.join(temp_dir, "web_diagnostic.log")
+            with patch("asr_sse_adapter.DIAGNOSTIC_LOG_PATH", log_path):
+                append_diagnostic_log({"event": "first"})
+                append_diagnostic_log({"event": "second"})
+
+                lines = read_diagnostic_log_tail(1)
+
+        self.assertEqual(1, len(lines))
+        self.assertIn('"event": "second"', lines[0])
 
     def test_sends_decoded_base64_chunk_to_session_websocket(self):
         session_id = "chunk-b64-test"

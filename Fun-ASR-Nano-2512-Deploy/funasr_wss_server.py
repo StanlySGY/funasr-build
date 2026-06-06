@@ -48,6 +48,20 @@ logging.basicConfig(level=logging.ERROR)
 PROCESS_START_TIME = time.time()
 _ORIGINAL_SYS_EXIT = sys.exit
 _ORIGINAL_OS_EXIT = os._exit
+DIAG_LOG_PATH = os.environ.get("FUNASR_WS_DIAG_LOG", "/app/funasr-deploy/asr_logs/funasr_ws_diag.log")
+_DIAG_FILE = None
+
+
+def _open_diag_file():
+    global _DIAG_FILE
+    if _DIAG_FILE is not None:
+        return _DIAG_FILE
+    try:
+        os.makedirs(os.path.dirname(DIAG_LOG_PATH), exist_ok=True)
+        _DIAG_FILE = open(DIAG_LOG_PATH, "a", encoding="utf-8", buffering=1)
+    except Exception:
+        _DIAG_FILE = None
+    return _DIAG_FILE
 
 
 def diag(event, **fields):
@@ -58,7 +72,12 @@ def diag(event, **fields):
         "uptime_sec": round(time.time() - PROCESS_START_TIME, 3),
     }
     payload.update(fields)
-    print("DIAG " + json.dumps(payload, ensure_ascii=False, default=str), flush=True)
+    line = "DIAG " + json.dumps(payload, ensure_ascii=False, default=str)
+    print(line, flush=True)
+    diag_file = _open_diag_file()
+    if diag_file is not None:
+        with suppress(Exception):
+            diag_file.write(line + "\n")
 
 
 def _stack_text(frame=None):
@@ -95,13 +114,16 @@ def _handle_thread_exception(args):
 
 
 def _enable_diagnostics():
-    faulthandler.enable(file=sys.stderr, all_threads=True)
+    diag_file = _open_diag_file()
+    fault_file = diag_file if diag_file is not None else sys.stderr
+    faulthandler.enable(file=fault_file, all_threads=True)
     with suppress(Exception):
-        faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
+        faulthandler.register(signal.SIGUSR1, file=fault_file, all_threads=True)
     sys.exit = _logged_sys_exit
     os._exit = _logged_os_exit
     sys.excepthook = _handle_unhandled_exception
     threading.excepthook = _handle_thread_exception
+    atexit.register(lambda: _DIAG_FILE and _DIAG_FILE.close())
     atexit.register(lambda: diag("process_atexit"))
     diag(
         "process_start",
@@ -111,6 +133,7 @@ def _enable_diagnostics():
         machine=platform.machine(),
         torch_version=getattr(torch, "__version__", None),
         torch_file=getattr(torch, "__file__", None),
+        diag_log_path=DIAG_LOG_PATH,
     )
 
 
