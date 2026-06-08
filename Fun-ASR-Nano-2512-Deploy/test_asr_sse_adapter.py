@@ -17,6 +17,7 @@ from asr_sse_adapter import (
     app,
     connect_backend,
     create_session,
+    create_uploaded_file_session,
     decode_audio_base64,
     end_session,
     normalize_diagnostic_modes,
@@ -24,6 +25,8 @@ from asr_sse_adapter import (
     send_chunk_base64,
     session_sse,
     sessions,
+    upload_wav_file,
+    uploaded_audios,
 )
 
 
@@ -37,6 +40,15 @@ class FakeWebSocket:
 
     async def close(self):
         self.closed = True
+
+
+class FakeUploadFile:
+    def __init__(self, filename, data):
+        self.filename = filename
+        self._data = data
+
+    async def read(self):
+        return self._data
 
 
 def build_wav_bytes(sample_rate: int, channels: int, sample_width: int, frames: bytes) -> bytes:
@@ -96,6 +108,12 @@ class DecodeAudioBase64Test(unittest.TestCase):
         self.assertIn("/diagnostics/realtime-ab", paths)
         self.assertIn("/diagnostics/log", paths)
 
+    def test_registers_uploaded_wav_session_routes(self):
+        paths = {route.path for route in app.routes}
+
+        self.assertIn("/asr/upload-wav", paths)
+        self.assertIn("/asr/uploaded-file-session/{audio_id}", paths)
+
     def test_normalizes_diagnostic_modes(self):
         self.assertEqual(["online", "2pass"], normalize_diagnostic_modes("online, 2pass"))
 
@@ -153,6 +171,65 @@ class DecodeAudioBase64Test(unittest.TestCase):
         self.assertFalse(websocket.sent[0].startswith(b"RIFF"))
         self.assertEqual(3200, len(websocket.sent[0]))
         self.assertEqual({"ok": True, "bytes": 3200}, response)
+
+    def test_upload_wav_file_returns_audio_id_and_stores_normalized_audio(self):
+        wav_payload = build_wav_bytes(48000, 1, 2, b"\x00\x00" * 4800)
+
+        response = asyncio.run(upload_wav_file(FakeUploadFile("input.wav", wav_payload)))
+        audio_id = response["audio_id"]
+
+        try:
+            self.assertIn(audio_id, uploaded_audios)
+            self.assertEqual("input.wav", response["filename"])
+            self.assertEqual(16000, response["sample_rate"])
+            self.assertEqual(3200, response["bytes"])
+            self.assertEqual(3200, len(uploaded_audios[audio_id].audio_bytes))
+        finally:
+            uploaded_audios.pop(audio_id, None)
+
+    def test_create_uploaded_file_session_starts_streaming_uploaded_audio(self):
+        async def run_case():
+            wav_payload = build_wav_bytes(16000, 1, 2, b"abcdef")
+            upload_response = await upload_wav_file(FakeUploadFile("input.wav", wav_payload))
+            audio_id = upload_response["audio_id"]
+            websocket = FakeWebSocket()
+
+            async def fake_connect_backend():
+                return websocket
+
+            async def fake_receive_to_queue(ws, queue):
+                return None
+
+            async def no_sleep(delay):
+                return None
+
+            with patch("asr_sse_adapter.connect_backend", fake_connect_backend), \
+                 patch("asr_sse_adapter.receive_to_queue", fake_receive_to_queue), \
+                 patch("asr_sse_adapter.asyncio.sleep", no_sleep):
+                response = await create_uploaded_file_session(
+                    audio_id,
+                    mode="online",
+                    chunk_size="5,10,5",
+                    chunk_interval=10,
+                    encoder_chunk_look_back=4,
+                    decoder_chunk_look_back=0,
+                    hotwords="",
+                )
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+
+            session_id = response["session_id"]
+            sessions.pop(session_id, None)
+            uploaded_audios.pop(audio_id, None)
+            return response, websocket.sent
+
+        response, sent = asyncio.run(run_case())
+
+        self.assertIn("session_id", response)
+        self.assertEqual("input.wav", response["filename"])
+        self.assertIn('"is_speaking": true', sent[0])
+        self.assertEqual(b"abcdef", sent[1])
+        self.assertIn('"is_speaking": false', sent[2])
 
     def test_splits_realtime_base64_chunk_to_backend_stride(self):
         session_id = "chunk-split-test"

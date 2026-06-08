@@ -616,6 +616,7 @@
       <div class="nav-group">
         <div class="nav-label">测试功能</div>
         <button class="nav-item active" type="button" data-pane="filePane"><span class="nav-dot"></span>文件识别</button>
+        <button class="nav-item" type="button" data-pane="uploadStreamPane"><span class="nav-dot"></span>上传 WAV 流式</button>
         <button class="nav-item" type="button" data-pane="base64Pane"><span class="nav-dot"></span>完整 Base64</button>
         <button class="nav-item" type="button" data-pane="streamPane"><span class="nav-dot"></span>实时分片流</button>
         <button class="nav-item" type="button" data-pane="diagnosticPane"><span class="nav-dot"></span>一键诊断</button>
@@ -628,7 +629,7 @@
       </div>
 
       <div class="sidebar-footer">
-        建议先使用 <span class="kbd">文件识别</span> 验证服务，再使用 <span class="kbd">实时分片流</span> 模拟业务方实时推送 Base64 音频片段。
+        建议先使用 <span class="kbd">文件识别</span> 验证服务；生产侧大文件可用 <span class="kbd">上传 WAV 流式</span> 分两步识别。
       </div>
     </aside>
 
@@ -636,7 +637,7 @@
       <header class="topbar">
         <div class="page-title">
           <h1>语音识别测试台</h1>
-          <p>在浏览器里直接调试文件流、完整 Base64、实时 Base64 分片流。</p>
+          <p>在浏览器里直接调试文件流、先上传再识别、完整 Base64、实时 Base64 分片流。</p>
         </div>
         <div class="top-actions">
           <button id="healthBtn" class="btn secondary" type="button">刷新状态</button>
@@ -676,6 +677,7 @@
           <div class="panel-body">
             <div class="mode-switch">
               <button class="mode-btn active" type="button" data-pane="filePane">文件</button>
+              <button class="mode-btn" type="button" data-pane="uploadStreamPane">上传流式</button>
               <button class="mode-btn" type="button" data-pane="base64Pane">Base64</button>
               <button class="mode-btn" type="button" data-pane="streamPane">实时流</button>
               <button class="mode-btn" type="button" data-pane="diagnosticPane">诊断</button>
@@ -711,6 +713,36 @@
               </details>
               <div class="actions">
                 <button id="fileRun" class="btn primary" type="button">开始识别</button>
+              </div>
+            </section>
+
+            <section id="uploadStreamPane" class="pane">
+              <div class="callout">分步 WAV 识别：先调用 <strong>POST /asr/upload-wav</strong> 上传文件拿 <strong>audio_id</strong>，再调用 <strong>POST /asr/uploaded-file-session/{audio_id}</strong> 创建会话并通过 SSE 收结果。</div>
+              <div class="form-grid">
+                <div class="field full">
+                  <label for="uploadStreamFile">WAV 文件</label>
+                  <input id="uploadStreamFile" type="file" accept="audio/wav,.wav" />
+                </div>
+                <div class="field">
+                  <label for="uploadStreamMode">识别模式</label>
+                  <select id="uploadStreamMode">
+                    <option value="online">online</option>
+                    <option value="2pass">2pass</option>
+                    <option value="offline">offline</option>
+                  </select>
+                </div>
+                <div class="field full">
+                  <label for="uploadStreamHotwords">热词</label>
+                  <input id="uploadStreamHotwords" placeholder="没有热词可留空" />
+                </div>
+              </div>
+              <p class="helper">这个链路避免“上传文件”和“等待识别结果”绑在同一个请求里，适合文件上传时间较长的前端接入。</p>
+              <details class="request-preview">
+                <summary>调用链路</summary>
+                <pre>POST /asr/upload-wav -> POST /asr/uploaded-file-session/{audio_id} -> GET /asr/sse/{session_id}</pre>
+              </details>
+              <div class="actions">
+                <button id="uploadStreamRun" class="btn primary" type="button">上传并创建流式识别</button>
               </div>
             </section>
 
@@ -867,6 +899,7 @@
       clearBtn: document.querySelector('#clearBtn'),
       copyTextBtn: document.querySelector('#copyTextBtn'),
       fileRun: document.querySelector('#fileRun'),
+      uploadStreamRun: document.querySelector('#uploadStreamRun'),
       base64Run: document.querySelector('#base64Run'),
       streamRun: document.querySelector('#streamRun'),
       streamStop: document.querySelector('#streamStop'),
@@ -1081,6 +1114,44 @@
       }
     }
 
+    async function runUploadedFileStream() {
+      const file = document.querySelector('#uploadStreamFile').files[0];
+      if (!file) return addEvent('error', '请先选择 WAV 文件');
+      clearEvents(`分步 WAV 流式识别开始：${file.name}`);
+      setBusy(els.uploadStreamRun, true, '上传中');
+      try {
+        const uploadForm = new FormData();
+        uploadForm.append('file', file, file.name);
+        const uploadResponse = await fetch('/asr/upload-wav', { method: 'POST', body: uploadForm });
+        if (!uploadResponse.ok) throw new Error(await uploadResponse.text());
+        const uploaded = await uploadResponse.json();
+        addEvent('upload', uploaded);
+
+        setBusy(els.uploadStreamRun, true, '创建会话');
+        const sessionForm = new FormData();
+        sessionForm.append('mode', formValue('uploadStreamMode', 'online'));
+        sessionForm.append('chunk_size', '5,10,5');
+        sessionForm.append('chunk_interval', '10');
+        sessionForm.append('encoder_chunk_look_back', '4');
+        sessionForm.append('decoder_chunk_look_back', '0');
+        sessionForm.append('hotwords', formValue('uploadStreamHotwords', ''));
+        const sessionResponse = await fetch(`/asr/uploaded-file-session/${uploaded.audio_id}`, {
+          method: 'POST',
+          body: sessionForm,
+        });
+        if (!sessionResponse.ok) throw new Error(await sessionResponse.text());
+        const session = await sessionResponse.json();
+        state.sessionId = session.session_id;
+        addEvent('session', session);
+        openSessionSse(session.session_id);
+      } catch (error) {
+        addEvent('error', error.message);
+      } finally {
+        setBusy(els.uploadStreamRun, false);
+        checkHealth();
+      }
+    }
+
     async function fileToPcm16(file, sampleRate = 16000) {
       const arrayBuffer = await file.arrayBuffer();
       const audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -1236,6 +1307,7 @@
       addEvent('log', '识别文本已复制到剪贴板');
     });
     els.fileRun.addEventListener('click', runFileSse);
+    els.uploadStreamRun.addEventListener('click', runUploadedFileStream);
     els.base64Run.addEventListener('click', runBase64Sse);
     els.streamRun.addEventListener('click', runStreamSimulation);
     els.diagnosticRun.addEventListener('click', runDiagnostic);
