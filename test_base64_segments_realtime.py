@@ -1,4 +1,5 @@
 import argparse
+import audioop
 import base64
 import io
 import json
@@ -37,11 +38,19 @@ def decode_segment(payload):
             sample_rate = wav_file.getframerate()
             channels = wav_file.getnchannels()
             sample_width = wav_file.getsampwidth()
+            frames = wav_file.readframes(wav_file.getnframes())
+            if channels != 1:
+                frames = audioop.tomono(frames, sample_width, 0.5, 0.5)
+            if sample_width != 2:
+                frames = audioop.lin2lin(frames, sample_width, 2)
+            if sample_rate != 16000:
+                frames, _ = audioop.ratecv(frames, 2, 1, sample_rate, 16000, None)
             if sample_rate != 16000 or channels != 1 or sample_width != 2:
-                raise RuntimeError(
-                    f"WAV must be 16kHz mono PCM16, got {sample_rate}Hz {channels}ch {sample_width} bytes/sample"
+                print(
+                    f"converted WAV {sample_rate}Hz {channels}ch {sample_width} bytes/sample -> 16000Hz 1ch 2 bytes/sample",
+                    flush=True,
                 )
-            return wav_file.readframes(wav_file.getnframes())
+            return frames
     return raw
 
 
