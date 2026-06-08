@@ -63,6 +63,7 @@ services:
       - FUNASR_DIAGNOSTIC_LOG=/app/funasr-deploy/asr_logs/web_diagnostic.log
       - FUNASR_DIAGNOSTIC_TIMEOUT_SEC=120
       - FUNASR_DIAGNOSTIC_END_WAIT_SEC=35
+      - FUNASR_ONLINE_RESULT_WAIT_SEC=35
     volumes:
       - ./Fun-ASR-Nano-2512-Deploy/asr_logs:/app/funasr-deploy/asr_logs
     restart: unless-stopped

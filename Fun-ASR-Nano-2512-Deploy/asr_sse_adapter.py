@@ -33,6 +33,7 @@ DIAGNOSTIC_LOG_PATH = os.environ.get(
 )
 DIAGNOSTIC_TIMEOUT_SEC = float(os.environ.get("FUNASR_DIAGNOSTIC_TIMEOUT_SEC", "120"))
 DIAGNOSTIC_END_WAIT_SEC = float(os.environ.get("FUNASR_DIAGNOSTIC_END_WAIT_SEC", "35"))
+ONLINE_RESULT_WAIT_SEC = float(os.environ.get("FUNASR_ONLINE_RESULT_WAIT_SEC", "35"))
 
 SSE_HEADERS = {
     "Cache-Control": "no-cache",
@@ -522,7 +523,7 @@ def build_audio_sse_response(
                 received_result = False
                 while True:
                     try:
-                        timeout = 1.0 if end_sent.is_set() and mode == "online" else None
+                        timeout = ONLINE_RESULT_WAIT_SEC if end_sent.is_set() and mode == "online" else None
                         event, data = await asyncio.wait_for(queue.get(), timeout=timeout)
                     except asyncio.TimeoutError:
                         break
