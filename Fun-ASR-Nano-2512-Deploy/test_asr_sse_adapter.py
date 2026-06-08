@@ -1,8 +1,10 @@
 import asyncio
 import base64
+import io
 import os
 import tempfile
 import unittest
+import wave
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -37,6 +39,16 @@ class FakeWebSocket:
         self.closed = True
 
 
+def build_wav_bytes(sample_rate: int, channels: int, sample_width: int, frames: bytes) -> bytes:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(channels)
+        wav_file.setsampwidth(sample_width)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(frames)
+    return buffer.getvalue()
+
+
 class DecodeAudioBase64Test(unittest.TestCase):
     def test_decodes_plain_base64_audio(self):
         expected = b"\x01\x02pcm"
@@ -51,6 +63,14 @@ class DecodeAudioBase64Test(unittest.TestCase):
         encoded = base64.b64encode(expected).decode("ascii")
 
         actual = decode_audio_base64(f"data:audio/wav;base64,{encoded}")
+
+        self.assertEqual(expected, actual)
+
+    def test_decodes_base64_audio_with_whitespace(self):
+        expected = b"\x05\x06pcm"
+        encoded = base64.b64encode(expected).decode("ascii")
+
+        actual = decode_audio_base64(f"{encoded[:4]}\n {encoded[4:]}")
 
         self.assertEqual(expected, actual)
 
@@ -113,6 +133,26 @@ class DecodeAudioBase64Test(unittest.TestCase):
 
         self.assertEqual([expected], websocket.sent)
         self.assertEqual({"ok": True, "bytes": len(expected)}, response)
+
+    def test_normalizes_wav_base64_chunk_before_sending_to_backend(self):
+        session_id = "chunk-b64-wav-test"
+        websocket = FakeWebSocket()
+        frames_48k = b"\x00\x00" * 4800
+        wav_payload = build_wav_bytes(48000, 1, 2, frames_48k)
+        encoded = base64.b64encode(wav_payload).decode("ascii")
+        sessions[session_id] = AsrSession(websocket=websocket)
+
+        try:
+            response = asyncio.run(
+                send_chunk_base64(session_id, Base64ChunkRequest(audio_base64=encoded))
+            )
+        finally:
+            sessions.pop(session_id, None)
+
+        self.assertEqual(1, len(websocket.sent))
+        self.assertFalse(websocket.sent[0].startswith(b"RIFF"))
+        self.assertEqual(3200, len(websocket.sent[0]))
+        self.assertEqual({"ok": True, "bytes": 3200}, response)
 
     def test_splits_realtime_base64_chunk_to_backend_stride(self):
         session_id = "chunk-split-test"

@@ -748,7 +748,7 @@
             </section>
 
             <section id="streamPane" class="pane">
-              <div class="callout">模拟实时流：创建会话，打开 SSE，再把音频转为 16k PCM16 后按片段 Base64 推送。</div>
+              <div class="callout">实时 Base64 流：创建会话，打开 SSE，再持续调用 <strong>POST /asr/chunk-b64/{session_id}</strong> 推送音频分片。</div>
               <div class="form-grid">
                 <div class="field full">
                   <label for="streamFile">模拟实时流的音频文件</label>
@@ -771,10 +771,13 @@
                   <input id="streamHotwords" placeholder="没有热词可留空" />
                 </div>
               </div>
-              <p class="helper">浏览器需要支持 WebAudio 解码当前音频格式。若某个格式失败，换 WAV 或 MP3 测试。</p>
+              <p class="helper">接口支持两种分片：16k 单声道 PCM16 Base64，或每段都是完整 WAV 的 Base64。WAV 分片会在服务端自动转成 16k PCM16；当前页面演示仍使用浏览器解码后推 PCM 分片。</p>
               <details class="request-preview">
                 <summary>调用链路</summary>
-                <pre>POST /asr/session -> GET /asr/sse/{session_id} -> POST /asr/chunk-b64/{session_id} -> POST /asr/end/{session_id}</pre>
+                <pre>POST /asr/session -> GET /asr/sse/{session_id} -> POST /asr/chunk-b64/{session_id} -> POST /asr/end/{session_id}
+
+/asr/chunk-b64 请求体：
+{ "audio_base64": "16k PCM16 Base64 或完整 WAV 分片 Base64" }</pre>
               </details>
               <div class="actions">
                 <button id="streamRun" class="btn primary" type="button">开始模拟实时流</button>
@@ -1159,7 +1162,7 @@
       state.stopped = false;
       state.streamDone = false;
       try {
-        addEvent('log', '正在用浏览器解码音频，并转换为 16k 单声道 PCM16');
+        addEvent('log', '正在用浏览器解码音频，并转换为 16k 单声道 PCM16；生产接口也支持直接上传完整 WAV Base64 分片');
         const pcm = await fileToPcm16(file, 16000);
         const session = await createSession();
         state.sessionId = session.session_id;

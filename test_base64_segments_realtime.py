@@ -1,14 +1,11 @@
 import argparse
-import audioop
 import base64
-import io
 import json
 import re
 import threading
 import time
 import urllib.parse
 import urllib.request
-import wave
 
 
 def parse_segments(text_path):
@@ -31,27 +28,8 @@ def post(base_url, path, data=b"", content_type="application/json", timeout=120)
         return response.read()
 
 
-def decode_segment(payload):
-    raw = base64.b64decode(re.sub(r"\s+", "", payload))
-    if raw.startswith(b"RIFF"):
-        with wave.open(io.BytesIO(raw), "rb") as wav_file:
-            sample_rate = wav_file.getframerate()
-            channels = wav_file.getnchannels()
-            sample_width = wav_file.getsampwidth()
-            frames = wav_file.readframes(wav_file.getnframes())
-            if channels != 1:
-                frames = audioop.tomono(frames, sample_width, 0.5, 0.5)
-            if sample_width != 2:
-                frames = audioop.lin2lin(frames, sample_width, 2)
-            if sample_rate != 16000:
-                frames, _ = audioop.ratecv(frames, 2, 1, sample_rate, 16000, None)
-            if sample_rate != 16000 or channels != 1 or sample_width != 2:
-                print(
-                    f"converted WAV {sample_rate}Hz {channels}ch {sample_width} bytes/sample -> 16000Hz 1ch 2 bytes/sample",
-                    flush=True,
-                )
-            return frames
-    return raw
+def compact_base64(payload):
+    return re.sub(r"\s+", "", payload)
 
 
 def read_sse(base_url, session_id, stop_event):
@@ -72,10 +50,11 @@ def create_session(base_url, mode):
 
 
 def send_segment(base_url, session_id, name, payload):
-    pcm = decode_segment(payload)
-    encoded = base64.b64encode(pcm).decode()
+    encoded = compact_base64(payload)
+    raw = base64.b64decode(encoded)
     body = json.dumps({"audio_base64": encoded}).encode()
-    print(f"send {name}: pcm_bytes={len(pcm)}", flush=True)
+    audio_type = "wav" if raw.startswith(b"RIFF") else "pcm"
+    print(f"send {name}: {audio_type}_bytes={len(raw)}", flush=True)
     post(base_url, f"/asr/chunk-b64/{session_id}", body, "application/json")
 
 
