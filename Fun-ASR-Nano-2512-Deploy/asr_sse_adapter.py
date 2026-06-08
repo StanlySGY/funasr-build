@@ -34,6 +34,7 @@ DIAGNOSTIC_LOG_PATH = os.environ.get(
 DIAGNOSTIC_TIMEOUT_SEC = float(os.environ.get("FUNASR_DIAGNOSTIC_TIMEOUT_SEC", "120"))
 DIAGNOSTIC_END_WAIT_SEC = float(os.environ.get("FUNASR_DIAGNOSTIC_END_WAIT_SEC", "35"))
 ONLINE_RESULT_WAIT_SEC = float(os.environ.get("FUNASR_ONLINE_RESULT_WAIT_SEC", "35"))
+CHUNK_FRAME_DELAY_SEC = float(os.environ.get("FUNASR_CHUNK_FRAME_DELAY_SEC", "0"))
 
 SSE_HEADERS = {
     "Cache-Control": "no-cache",
@@ -382,6 +383,8 @@ async def send_session_audio(session: AsrSession, data: bytes) -> None:
         frame = bytes(session.pending_audio[:stride])
         del session.pending_audio[:stride]
         await session.websocket.send(frame)
+        if CHUNK_FRAME_DELAY_SEC > 0 and len(session.pending_audio) >= stride:
+            await asyncio.sleep(CHUNK_FRAME_DELAY_SEC)
 
 
 async def flush_session_audio(session: AsrSession) -> None:

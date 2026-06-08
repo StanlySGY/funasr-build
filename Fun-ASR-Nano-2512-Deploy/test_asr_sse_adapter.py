@@ -133,6 +133,32 @@ class DecodeAudioBase64Test(unittest.TestCase):
         self.assertEqual(bytearray(b"g"), session.pending_audio)
         self.assertEqual({"ok": True, "bytes": len(payload)}, response)
 
+    def test_paces_split_realtime_chunks_when_configured(self):
+        session_id = "chunk-paced-test"
+        websocket = FakeWebSocket()
+        payload = b"abcdef"
+        encoded = base64.b64encode(payload).decode("ascii")
+        sleep_calls = []
+
+        async def fake_sleep(delay):
+            sleep_calls.append(delay)
+
+        session = AsrSession(websocket=websocket, chunk_stride_bytes=3)
+        sessions[session_id] = session
+
+        try:
+            with patch("asr_sse_adapter.CHUNK_FRAME_DELAY_SEC", 0.06), \
+                 patch("asr_sse_adapter.asyncio.sleep", fake_sleep):
+                response = asyncio.run(
+                    send_chunk_base64(session_id, Base64ChunkRequest(audio_base64=encoded))
+                )
+        finally:
+            sessions.pop(session_id, None)
+
+        self.assertEqual([b"abc", b"def"], websocket.sent)
+        self.assertEqual([0.06], sleep_calls)
+        self.assertEqual({"ok": True, "bytes": len(payload)}, response)
+
     def test_end_session_flushes_pending_realtime_audio(self):
         session_id = "chunk-flush-test"
         websocket = FakeWebSocket()
