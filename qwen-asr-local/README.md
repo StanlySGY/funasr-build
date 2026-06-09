@@ -14,7 +14,7 @@
 ```bash
 QWEN_ASR_API_STYLE=transcriptions
 QWEN_ASR_BASE_URL=http://127.0.0.1:10100/v1
-QWEN_ASR_MODEL=Qwen/Qwen3-ASR-0.6B
+QWEN_ASR_MODEL=/models/Qwen3-ASR-0.6B
 QWEN_ASR_TIMEOUT_SEC=600
 ```
 
@@ -45,13 +45,14 @@ QWEN_ASR_TIMEOUT_SEC=600
 /data/maas/sgy_arm/qwen-asr-models
 ```
 
-首次启动会下载模型，耗时取决于网络和模型源可用性。
+先执行项目根目录的 `./download_qwen_asr_model.sh` 下载模型到该目录；如果不下载，模型加载会尝试访问 HuggingFace。
 
 ## 测试
 
 ```bash
+./download_qwen_asr_model.sh
 curl http://127.0.0.1:10100/health
-./test_qwen_asr_local_file_sse.sh example.wav
+./test_qwen_asr_local_file_sse.sh /path/to/audio.wav
 ```
 
 或直接请求适配层：

@@ -471,8 +471,9 @@ ffmpeg -y -i input.wav -ar 16000 -ac 1 -sample_fmt s16 output-16k.wav
 测试命令：
 
 ```bash
+./download_qwen_asr_model.sh
 curl http://127.0.0.1:10100/health
-./test_qwen_asr_local_file_sse.sh example.wav
+./test_qwen_asr_local_file_sse.sh /path/to/audio.wav
 ```
 
 说明：
@@ -480,4 +481,4 @@ curl http://127.0.0.1:10100/health
 - 本地 Qwen-ASR 服务暴露 `POST /v1/audio/transcriptions`。
 - `funasr-sse-adapter` 会通过 `QWEN_ASR_API_STYLE=transcriptions` 调用本地服务。
 - 对外仍使用已有 `/qwen-asr/*` 接口。
-- 这是 ARM CPU PoC，首次启动需要下载模型；性能和兼容性必须以服务器实测为准。
+- 这是 ARM CPU PoC，需要先通过 `./download_qwen_asr_model.sh` 把模型下载到服务器本地；性能和兼容性必须以服务器实测为准。

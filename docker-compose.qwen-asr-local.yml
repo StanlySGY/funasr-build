@@ -8,7 +8,7 @@ services:
     network_mode: host
     environment:
       - TZ=Asia/Shanghai
-      - QWEN_ASR_MODEL=Qwen/Qwen3-ASR-0.6B
+      - QWEN_ASR_MODEL=/models/Qwen3-ASR-0.6B
       - QWEN_ASR_BACKEND=transformers
       - QWEN_ASR_DEVICE=cpu
       - QWEN_ASR_HOST=0.0.0.0
