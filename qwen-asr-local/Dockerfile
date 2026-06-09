@@ -1,6 +1,4 @@
-FROM python:3.12-slim-bookworm
-
-ARG DEBIAN_FRONTEND=noninteractive
+FROM funasr-ws-cpu:latest
 
 ENV PYTHONUNBUFFERED=1
 ENV QWEN_ASR_MODEL=Qwen/Qwen3-ASR-0.6B
@@ -13,15 +11,8 @@ ENV MODELSCOPE_CACHE=/models/modelscope
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    git \
-    curl \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+RUN pip3 install --no-cache-dir -r /app/requirements.txt
 
 COPY qwen_asr_local_server.py /app/qwen_asr_local_server.py
 COPY start_qwen_asr_local.sh /app/start_qwen_asr_local.sh

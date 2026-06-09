@@ -37,6 +37,8 @@ QWEN_ASR_TIMEOUT_SEC=600
 - `qwen-asr-local`：本地 Qwen-ASR 服务，端口 `10100`
 - `funasr-sse-adapter`：重新加载 Qwen-ASR 本地服务配置，端口 `10098`
 
+`qwen-asr-local` 镜像基于本项目已构建的 `funasr-ws-cpu:latest`，避免服务器再次拉取外部 Python 基础镜像。
+
 模型缓存目录默认挂载到：
 
 ```text
