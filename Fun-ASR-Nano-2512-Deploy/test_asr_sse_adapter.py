@@ -13,8 +13,10 @@ from websockets.exceptions import InvalidMessage
 from asr_sse_adapter import (
     AsrSession,
     Base64ChunkRequest,
+    MAX_AUDIO_BYTES,
     append_diagnostic_log,
     app,
+    cleanup_idle_resources,
     connect_backend,
     create_session,
     create_uploaded_file_session,
@@ -28,12 +30,15 @@ from asr_sse_adapter import (
     qwen_asr_file_sse,
     read_diagnostic_log_tail,
     send_chunk_base64,
+    send_qwen_chunk_base64,
     session_sse,
     sessions,
     upload_wav_file,
     upload_qwen_wav_file,
     end_qwen_session,
     uploaded_audios,
+    UploadedAudio,
+    QwenSession,
 )
 
 
@@ -313,6 +318,67 @@ class DecodeAudioBase64Test(unittest.TestCase):
             self.assertEqual(16000, response["sample_rate"])
         finally:
             qwen_uploaded_audios.pop(audio_id, None)
+
+    def test_cleanup_idle_resources_removes_abandoned_sessions_and_uploads(self):
+        async def run_case():
+            websocket = FakeWebSocket()
+            session_id = "old-asr-session"
+            qwen_session_id = "old-qwen-session"
+            audio_id = "old-upload"
+            qwen_audio_id = "old-qwen-upload"
+            sessions[session_id] = AsrSession(websocket=websocket)
+            qwen_sessions[qwen_session_id] = QwenSession()
+            uploaded_audios[audio_id] = UploadedAudio("old.wav", b"abcdef", 16000)
+            qwen_uploaded_audios[qwen_audio_id] = UploadedAudio("old-qwen.wav", b"abcdef", 16000)
+            sessions[session_id].last_activity_at = 1
+            qwen_sessions[qwen_session_id].last_activity_at = 1
+            uploaded_audios[audio_id].last_activity_at = 1
+            qwen_uploaded_audios[qwen_audio_id].last_activity_at = 1
+
+            try:
+                with patch("asr_sse_adapter.time.monotonic", return_value=10_000):
+                    await cleanup_idle_resources(max_idle_sec=1)
+                return (
+                    session_id in sessions,
+                    qwen_session_id in qwen_sessions,
+                    audio_id in uploaded_audios,
+                    qwen_audio_id in qwen_uploaded_audios,
+                    websocket.closed,
+                )
+            finally:
+                sessions.pop(session_id, None)
+                qwen_sessions.pop(qwen_session_id, None)
+                uploaded_audios.pop(audio_id, None)
+                qwen_uploaded_audios.pop(qwen_audio_id, None)
+
+        exists = asyncio.run(run_case())
+
+        self.assertEqual((False, False, False, False, True), exists)
+
+    def test_upload_wav_file_rejects_audio_larger_than_limit(self):
+        payload = b"RIFF" + (b"\x00" * MAX_AUDIO_BYTES)
+
+        with self.assertRaises(HTTPException) as context:
+            asyncio.run(upload_wav_file(FakeUploadFile("too-large.wav", payload)))
+
+        self.assertEqual(413, context.exception.status_code)
+
+    def test_qwen_chunk_session_rejects_audio_larger_than_limit(self):
+        async def run_case():
+            session_response = await create_qwen_session(mode="online", audio_fs=16000, hotwords="")
+            session_id = session_response["session_id"]
+            qwen_sessions[session_id].audio_bytes.extend(b"\x00" * MAX_AUDIO_BYTES)
+            encoded = base64.b64encode(b"\x00").decode("ascii")
+            try:
+                with self.assertRaises(HTTPException) as context:
+                    await send_qwen_chunk_base64(session_id, Base64ChunkRequest(audio_base64=encoded))
+                return context.exception.status_code
+            finally:
+                qwen_sessions.pop(session_id, None)
+
+        status_code = asyncio.run(run_case())
+
+        self.assertEqual(413, status_code)
 
     def test_splits_realtime_base64_chunk_to_backend_stride(self):
         session_id = "chunk-split-test"

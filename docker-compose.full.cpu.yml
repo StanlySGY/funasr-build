@@ -42,6 +42,9 @@ services:
       - FUNASR_DIAGNOSTIC_END_WAIT_SEC=35
       - FUNASR_ONLINE_RESULT_WAIT_SEC=35
       - FUNASR_CHUNK_FRAME_DELAY_SEC=0.06
+      - ASR_MAX_AUDIO_BYTES=52428800
+      - ASR_SESSION_IDLE_TTL_SEC=1800
+      - ASR_CLEANUP_INTERVAL_SEC=60
     volumes:
       - ./Fun-ASR-Nano-2512-Deploy/asr_logs:/app/funasr-deploy/asr_logs
     restart: unless-stopped

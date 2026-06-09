@@ -42,6 +42,9 @@ QWEN_ASR_API_KEY = os.environ.get("QWEN_ASR_API_KEY") or os.environ.get("DASHSCO
 QWEN_ASR_MODEL = os.environ.get("QWEN_ASR_MODEL", "qwen3-asr-flash")
 QWEN_ASR_API_STYLE = os.environ.get("QWEN_ASR_API_STYLE", "chat").lower()
 QWEN_ASR_TIMEOUT_SEC = float(os.environ.get("QWEN_ASR_TIMEOUT_SEC", "120"))
+MAX_AUDIO_BYTES = int(os.environ.get("ASR_MAX_AUDIO_BYTES", str(50 * 1024 * 1024)))
+SESSION_IDLE_TTL_SEC = float(os.environ.get("ASR_SESSION_IDLE_TTL_SEC", str(30 * 60)))
+CLEANUP_INTERVAL_SEC = float(os.environ.get("ASR_CLEANUP_INTERVAL_SEC", "60"))
 
 SSE_HEADERS = {
     "Cache-Control": "no-cache",
@@ -99,6 +102,8 @@ SSE 返回格式为 `event: 事件名` 和 `data: JSON`：
 - WAV 上传支持自动重采样到 16kHz
 - 实时 Base64 分片若传 WAV，必须保证每个分片本身都是完整 WAV
 - 若传 PCM，需要通过 `audio_fs` 告诉服务端原始采样率
+- 单次完整音频和单个会话累计音频默认最大 50MB，超过会返回 HTTP 413；可用 `ASR_MAX_AUDIO_BYTES` 调整
+- 未订阅、断连或长期无活动的会话默认 30 分钟后自动清理；可用 `ASR_SESSION_IDLE_TTL_SEC` 调整
 
 ## Qwen-ASR 配置
 
@@ -125,6 +130,9 @@ class AsrSession:
     chunk_stride_bytes: int | None = None
     pending_audio: bytearray = field(default_factory=bytearray)
     send_task: asyncio.Task | None = None
+    audio_bytes_received: int = 0
+    created_at: float = field(default_factory=time.monotonic)
+    last_activity_at: float = field(default_factory=time.monotonic)
 
 
 @dataclass
@@ -132,6 +140,8 @@ class UploadedAudio:
     filename: str
     audio_bytes: bytes
     sample_rate: int
+    created_at: float = field(default_factory=time.monotonic)
+    last_activity_at: float = field(default_factory=time.monotonic)
 
 
 @dataclass
@@ -143,6 +153,8 @@ class QwenSession:
     hotwords: str = ""
     task: asyncio.Task | None = None
     ending: bool = False
+    created_at: float = field(default_factory=time.monotonic)
+    last_activity_at: float = field(default_factory=time.monotonic)
 
 
 class Base64AsrRequest(BaseModel):
@@ -216,6 +228,19 @@ def decode_audio_base64(audio_base64: str) -> bytes:
     if not data:
         raise HTTPException(status_code=400, detail="Empty audio payload")
     return data
+
+
+def touch_session(session: AsrSession | QwenSession) -> None:
+    session.last_activity_at = time.monotonic()
+
+
+def ensure_audio_size_allowed(size: int, *, existing_size: int = 0) -> None:
+    if existing_size + size > MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail=f"Audio payload exceeds {MAX_AUDIO_BYTES} bytes limit")
+
+
+def ensure_audio_payload_allowed(data: bytes) -> None:
+    ensure_audio_size_allowed(len(data))
 
 
 def normalize_sample_rate(pcm_data: bytes, sample_rate: int) -> tuple[bytes, int]:
@@ -561,7 +586,51 @@ async def cleanup_session(session_id: str) -> None:
         pass
 
 
+async def cleanup_qwen_session(session_id: str) -> None:
+    session = qwen_sessions.pop(session_id, None)
+    if session is None:
+        return
+    if session.task:
+        session.task.cancel()
+
+
+async def cleanup_idle_resources(max_idle_sec: float = SESSION_IDLE_TTL_SEC) -> dict[str, int]:
+    now = time.monotonic()
+    removed = {"sessions": 0, "qwen_sessions": 0, "uploaded_audios": 0, "qwen_uploaded_audios": 0}
+    for session_id, session in list(sessions.items()):
+        if now - session.last_activity_at > max_idle_sec:
+            await cleanup_session(session_id)
+            removed["sessions"] += 1
+    for session_id, session in list(qwen_sessions.items()):
+        if now - session.last_activity_at > max_idle_sec:
+            await cleanup_qwen_session(session_id)
+            removed["qwen_sessions"] += 1
+    for audio_id, uploaded in list(uploaded_audios.items()):
+        if now - uploaded.last_activity_at > max_idle_sec:
+            uploaded_audios.pop(audio_id, None)
+            removed["uploaded_audios"] += 1
+    for audio_id, uploaded in list(qwen_uploaded_audios.items()):
+        if now - uploaded.last_activity_at > max_idle_sec:
+            qwen_uploaded_audios.pop(audio_id, None)
+            removed["qwen_uploaded_audios"] += 1
+    return removed
+
+
+async def cleanup_idle_resources_loop() -> None:
+    while True:
+        await asyncio.sleep(CLEANUP_INTERVAL_SEC)
+        await cleanup_idle_resources()
+
+
+@app.on_event("startup")
+async def start_cleanup_task() -> None:
+    asyncio.create_task(cleanup_idle_resources_loop())
+
+
 async def send_session_audio(session: AsrSession, data: bytes) -> None:
+    ensure_audio_size_allowed(len(data), existing_size=session.audio_bytes_received)
+    session.audio_bytes_received += len(data)
+    touch_session(session)
     stride = session.chunk_stride_bytes
     if not stride or stride <= 0:
         await session.websocket.send(data)
@@ -679,6 +748,7 @@ def build_audio_sse_response(
     decoder_chunk_look_back: int,
     hotwords: str,
 ) -> StreamingResponse:
+    ensure_audio_payload_allowed(raw)
     chunks = parse_chunk_size(chunk_size)
     audio_bytes, sample_rate = read_audio_payload(filename, raw, audio_fs)
     stride = chunk_stride(sample_rate, chunks, chunk_interval)
@@ -774,6 +844,7 @@ def build_qwen_audio_sse_response(
     audio_fs: int,
     hotwords: str,
 ) -> StreamingResponse:
+    ensure_audio_payload_allowed(raw)
     audio_bytes, sample_rate = normalize_qwen_audio_payload(filename, raw, audio_fs)
     wav_bytes = pcm_to_wav_bytes(audio_bytes, sample_rate)
 
@@ -814,8 +885,10 @@ async def asr_file_sse(
     decoder_chunk_look_back: int = Form(0, description="解码器回看块数，默认 0；一般不用改"),
     hotwords: str = Form("", description="热词；没有可留空"),
 ):
+    raw = await file.read()
+    ensure_audio_payload_allowed(raw)
     return build_audio_sse_response(
-        raw=await file.read(),
+        raw=raw,
         filename=file.filename or "audio.pcm",
         mode=mode,
         audio_fs=audio_fs,
@@ -833,8 +906,10 @@ async def asr_file_sse(
     description="请求体传完整音频 Base64，接口会返回 SSE 流式识别结果。适合前端或业务系统一次性提交完整音频内容。",
 )
 async def asr_base64_sse(request: Base64AsrRequest):
+    raw = decode_audio_base64(request.audio_base64)
+    ensure_audio_payload_allowed(raw)
     return build_audio_sse_response(
-        raw=decode_audio_base64(request.audio_base64),
+        raw=raw,
         filename=request.filename,
         mode=request.mode,
         audio_fs=request.audio_fs,
@@ -860,6 +935,7 @@ async def upload_wav_file(
     raw = await file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Empty audio file")
+    ensure_audio_payload_allowed(raw)
     filename = file.filename or "upload.wav"
     if not filename.lower().endswith(".wav") and not raw.startswith(b"RIFF"):
         raise HTTPException(status_code=400, detail="Only WAV upload is supported")
@@ -1013,6 +1089,7 @@ async def send_chunk(
     data = await request.body()
     if not data:
         raise HTTPException(status_code=400, detail="Empty audio chunk")
+    ensure_audio_payload_allowed(data)
     await send_session_audio(session, data)
     return {"ok": True, "bytes": len(data)}
 
@@ -1030,6 +1107,7 @@ async def send_chunk_base64(session_id: str, request: Base64ChunkRequest):
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
     data = normalize_realtime_chunk_payload(decode_audio_base64(request.audio_base64))
+    ensure_audio_payload_allowed(data)
     await send_session_audio(session, data)
     return {"ok": True, "bytes": len(data)}
 
@@ -1061,8 +1139,10 @@ async def qwen_asr_file_sse(
     hotwords: str = Form("", description="热词；没有可留空"),
 ):
     _ = mode
+    raw = await file.read()
+    ensure_audio_payload_allowed(raw)
     return build_qwen_audio_sse_response(
-        raw=await file.read(),
+        raw=raw,
         filename=file.filename or "audio.wav",
         audio_fs=audio_fs,
         hotwords=hotwords,
@@ -1075,8 +1155,10 @@ async def qwen_asr_file_sse(
     description="请求体传完整音频 Base64，调用 Qwen-ASR 识别，并通过 SSE 返回 final/done 事件。",
 )
 async def qwen_asr_base64_sse(request: Base64AsrRequest):
+    raw = decode_audio_base64(request.audio_base64)
+    ensure_audio_payload_allowed(raw)
     return build_qwen_audio_sse_response(
-        raw=decode_audio_base64(request.audio_base64),
+        raw=raw,
         filename=request.filename,
         audio_fs=request.audio_fs,
         hotwords=request.hotwords,
@@ -1094,6 +1176,7 @@ async def upload_qwen_wav_file(
     raw = await file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Empty audio file")
+    ensure_audio_payload_allowed(raw)
     filename = file.filename or "qwen-upload.wav"
     if not filename.lower().endswith(".wav") and not raw.startswith(b"RIFF"):
         raise HTTPException(status_code=400, detail="Only WAV upload is supported")
@@ -1165,6 +1248,7 @@ async def qwen_session_sse(session_id: str = Path(..., description="通过 Qwen-
     session = qwen_sessions.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Qwen session not found")
+    touch_session(session)
 
     async def events():
         try:
@@ -1191,6 +1275,8 @@ async def send_qwen_chunk_base64(session_id: str, request: Base64ChunkRequest):
     if session is None:
         raise HTTPException(status_code=404, detail="Qwen session not found")
     data = normalize_realtime_chunk_payload(decode_audio_base64(request.audio_base64))
+    ensure_audio_size_allowed(len(data), existing_size=len(session.audio_bytes))
+    touch_session(session)
     session.audio_bytes.extend(data)
     return {"ok": True, "bytes": len(data), "provider": "qwen-asr"}
 
