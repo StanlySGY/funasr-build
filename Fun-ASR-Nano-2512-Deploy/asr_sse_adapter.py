@@ -6,6 +6,8 @@ import binascii
 import json
 import os
 import time
+import urllib.error
+import urllib.request
 import uuid
 import wave
 from contextlib import suppress
@@ -35,6 +37,11 @@ DIAGNOSTIC_TIMEOUT_SEC = float(os.environ.get("FUNASR_DIAGNOSTIC_TIMEOUT_SEC", "
 DIAGNOSTIC_END_WAIT_SEC = float(os.environ.get("FUNASR_DIAGNOSTIC_END_WAIT_SEC", "35"))
 ONLINE_RESULT_WAIT_SEC = float(os.environ.get("FUNASR_ONLINE_RESULT_WAIT_SEC", "35"))
 CHUNK_FRAME_DELAY_SEC = float(os.environ.get("FUNASR_CHUNK_FRAME_DELAY_SEC", "0"))
+QWEN_ASR_BASE_URL = os.environ.get("QWEN_ASR_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
+QWEN_ASR_API_KEY = os.environ.get("QWEN_ASR_API_KEY") or os.environ.get("DASHSCOPE_API_KEY", "")
+QWEN_ASR_MODEL = os.environ.get("QWEN_ASR_MODEL", "qwen3-asr-flash")
+QWEN_ASR_API_STYLE = os.environ.get("QWEN_ASR_API_STYLE", "chat").lower()
+QWEN_ASR_TIMEOUT_SEC = float(os.environ.get("QWEN_ASR_TIMEOUT_SEC", "120"))
 
 SSE_HEADERS = {
     "Cache-Control": "no-cache",
@@ -47,17 +54,24 @@ FunASR WebSocket 的 SSE 封装服务，面向业务系统提供语音识别接�
 
 ## 推荐用法
 
+### 0. 引擎选择
+- `/asr/*`：使用本地 FunASR WebSocket 后端，适合 ARM CPU 稳定版实时识别。
+- `/qwen-asr/*`：使用 Qwen-ASR 适配层，接口形态与 `/asr/*` 尽量保持一致；当前按整段音频调用 Qwen-ASR，并通过 SSE 返回 `final` 与 `done`。
+
 ### 1. 上传完整音频文件
 使用 `POST /asr/file-sse`，适合已有 `.wav` 或 `.pcm` 文件并希望一次请求直接返回 SSE 识别流的场景。
+Qwen-ASR 对应接口为 `POST /qwen-asr/file-sse`。
 
 ### 2. 上传完整 Base64 音频
 使用 `POST /asr/base64-sse`，适合前端或业务系统已经拿到完整音频 Base64 的场景。
+Qwen-ASR 对应接口为 `POST /qwen-asr/base64-sse`。
 
 ### 3. 先上传 WAV，再创建流式识别会话
 适合文件上传可能较慢、不希望前端一直等待识别请求的场景：
 1. `POST /asr/upload-wav` 上传 WAV 文件，立即返回 `audio_id`
 2. `POST /asr/uploaded-file-session/{audio_id}` 创建识别会话，立即返回 `session_id`
 3. `GET /asr/sse/{session_id}` 订阅识别结果；服务端会在后台把已上传文件按实时分片推给 FunASR
+Qwen-ASR 对应接口为 `/qwen-asr/upload-wav`、`/qwen-asr/uploaded-file-session/{audio_id}`、`/qwen-asr/sse/{session_id}`。
 
 ### 4. 实时推送 Base64 音频流
 依次调用：
@@ -85,11 +99,20 @@ SSE 返回格式为 `event: 事件名` 和 `data: JSON`：
 - WAV 上传支持自动重采样到 16kHz
 - 实时 Base64 分片若传 WAV，必须保证每个分片本身都是完整 WAV
 - 若传 PCM，需要通过 `audio_fs` 告诉服务端原始采样率
+
+## Qwen-ASR 配置
+
+- `QWEN_ASR_API_KEY` 或 `DASHSCOPE_API_KEY`：Qwen-ASR API Key
+- `QWEN_ASR_BASE_URL`：默认 `https://dashscope.aliyuncs.com/compatible-mode/v1`
+- `QWEN_ASR_MODEL`：默认 `qwen3-asr-flash`
+- `QWEN_ASR_API_STYLE`：默认 `chat`；若接本地 OpenAI 兼容转写服务，可设为 `transcriptions`
 """
 
 app = FastAPI(title="FunASR SSE 语音识别服务", description=API_DESCRIPTION, version="1.0.0")
 sessions: dict[str, "AsrSession"] = {}
 uploaded_audios: dict[str, "UploadedAudio"] = {}
+qwen_sessions: dict[str, "QwenSession"] = {}
+qwen_uploaded_audios: dict[str, "UploadedAudio"] = {}
 backend_ws = DEFAULT_BACKEND
 
 
@@ -109,6 +132,17 @@ class UploadedAudio:
     filename: str
     audio_bytes: bytes
     sample_rate: int
+
+
+@dataclass
+class QwenSession:
+    queue: asyncio.Queue = field(default_factory=asyncio.Queue)
+    filename: str = "qwen-stream.wav"
+    audio_bytes: bytearray = field(default_factory=bytearray)
+    sample_rate: int = TARGET_SAMPLE_RATE
+    hotwords: str = ""
+    task: asyncio.Task | None = None
+    ending: bool = False
 
 
 class Base64AsrRequest(BaseModel):
@@ -209,6 +243,18 @@ def normalize_wav_bytes(data: bytes) -> tuple[bytes, int]:
     return normalize_sample_rate(frames, sample_rate)
 
 
+def pcm_to_wav_bytes(pcm_data: bytes, sample_rate: int = TARGET_SAMPLE_RATE) -> bytes:
+    import io
+
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(pcm_data)
+    return buffer.getvalue()
+
+
 def read_audio_payload(filename: str, data: bytes, audio_fs: int) -> tuple[bytes, int]:
     if filename.lower().endswith(".wav"):
         return normalize_wav_bytes(data)
@@ -220,6 +266,108 @@ def normalize_realtime_chunk_payload(data: bytes) -> bytes:
         pcm_data, _ = normalize_wav_bytes(data)
         return pcm_data
     return data
+
+
+def normalize_qwen_audio_payload(filename: str, data: bytes, audio_fs: int) -> tuple[bytes, int]:
+    if data.startswith(b"RIFF") or filename.lower().endswith(".wav"):
+        return normalize_wav_bytes(data)
+    return normalize_sample_rate(data, audio_fs)
+
+
+def qwen_headers(content_type: str) -> dict[str, str]:
+    headers = {"Content-Type": content_type}
+    if QWEN_ASR_API_KEY:
+        headers["Authorization"] = f"Bearer {QWEN_ASR_API_KEY}"
+    return headers
+
+
+def qwen_text_from_response(payload: dict) -> str:
+    if "text" in payload:
+        return str(payload.get("text") or "")
+    choices = payload.get("choices") or []
+    if not choices:
+        return ""
+    message = choices[0].get("message") or {}
+    content = message.get("content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") in {"text", "output_text"}:
+                parts.append(str(item.get("text", "")))
+        return "".join(parts)
+    return str(content or "")
+
+
+def post_json(url: str, payload: dict) -> dict:
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(url, data=data, headers=qwen_headers("application/json"), method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=QWEN_ASR_TIMEOUT_SEC) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "ignore")
+        raise RuntimeError(f"Qwen ASR HTTP {exc.code}: {detail}") from exc
+
+
+def post_multipart_transcription(url: str, wav_bytes: bytes, filename: str) -> dict:
+    boundary = f"----qwen-asr-{uuid.uuid4().hex}"
+    fields = [
+        ("model", QWEN_ASR_MODEL),
+    ]
+    body = bytearray()
+    for name, value in fields:
+        body.extend(f"--{boundary}\r\n".encode())
+        body.extend(f'Content-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
+    body.extend(f"--{boundary}\r\n".encode())
+    body.extend(
+        (
+            f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+            "Content-Type: audio/wav\r\n\r\n"
+        ).encode()
+    )
+    body.extend(wav_bytes)
+    body.extend(f"\r\n--{boundary}--\r\n".encode())
+
+    headers = qwen_headers(f"multipart/form-data; boundary={boundary}")
+    request = urllib.request.Request(url, data=bytes(body), headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=QWEN_ASR_TIMEOUT_SEC) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "ignore")
+        raise RuntimeError(f"Qwen ASR HTTP {exc.code}: {detail}") from exc
+
+
+def call_qwen_asr(wav_bytes: bytes, filename: str = "audio.wav", hotwords: str = "") -> str:
+    if QWEN_ASR_API_STYLE == "transcriptions":
+        payload = post_multipart_transcription(f"{QWEN_ASR_BASE_URL}/audio/transcriptions", wav_bytes, filename)
+        return qwen_text_from_response(payload)
+    if not QWEN_ASR_API_KEY:
+        raise RuntimeError("QWEN_ASR_API_KEY or DASHSCOPE_API_KEY is required for Qwen ASR")
+    audio_base64 = base64.b64encode(wav_bytes).decode("ascii")
+    prompt = "请准确转写这段音频。"
+    if hotwords:
+        prompt += f" 识别时优先参考这些热词：{hotwords}"
+    payload = {
+        "model": QWEN_ASR_MODEL,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "input_audio", "input_audio": {"data": f"data:audio/wav;base64,{audio_base64}"}},
+                ],
+            }
+        ],
+    }
+    response = post_json(f"{QWEN_ASR_BASE_URL}/chat/completions", payload)
+    return qwen_text_from_response(response)
+
+
+async def transcribe_qwen_audio(wav_bytes: bytes, filename: str = "audio.wav", hotwords: str = "") -> str:
+    return await asyncio.to_thread(call_qwen_asr, wav_bytes, filename, hotwords)
 
 
 def build_init_message(
@@ -609,6 +757,48 @@ def build_audio_sse_response(
     return StreamingResponse(events(), media_type="text/event-stream", headers=SSE_HEADERS)
 
 
+def qwen_final_payload(text: str, filename: str) -> dict:
+    return {
+        "mode": "qwen-asr",
+        "text": text,
+        "wav_name": filename,
+        "is_final": True,
+        "provider": "qwen-asr",
+    }
+
+
+def build_qwen_audio_sse_response(
+    *,
+    raw: bytes,
+    filename: str,
+    audio_fs: int,
+    hotwords: str,
+) -> StreamingResponse:
+    audio_bytes, sample_rate = normalize_qwen_audio_payload(filename, raw, audio_fs)
+    wav_bytes = pcm_to_wav_bytes(audio_bytes, sample_rate)
+
+    async def events():
+        try:
+            text = await transcribe_qwen_audio(wav_bytes, filename or "audio.wav", hotwords)
+            yield sse_event("final", qwen_final_payload(text, filename or "audio.wav"))
+        except Exception as exc:
+            yield sse_event("error", {"message": str(exc), "provider": "qwen-asr"})
+        yield sse_event("done", {})
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers=SSE_HEADERS)
+
+
+async def run_qwen_session_task(session: QwenSession) -> None:
+    try:
+        wav_bytes = pcm_to_wav_bytes(bytes(session.audio_bytes), session.sample_rate)
+        text = await transcribe_qwen_audio(wav_bytes, session.filename, session.hotwords)
+        await session.queue.put(("final", qwen_final_payload(text, session.filename)))
+    except Exception as exc:
+        await session.queue.put(("error", {"message": str(exc), "provider": "qwen-asr"}))
+    finally:
+        await session.queue.put(("done", {}))
+
+
 @app.post(
     "/asr/file-sse",
     summary="上传音频文件并返回 SSE 识别流",
@@ -857,6 +1047,170 @@ async def end_session(session_id: str = Path(..., description="通过 POST /asr/
     await flush_session_audio(session)
     await session.websocket.send(json.dumps({"is_speaking": False}))
     return {"ok": True}
+
+
+@app.post(
+    "/qwen-asr/file-sse",
+    summary="Qwen-ASR 上传音频文件并返回 SSE 识别流",
+    description="上传完整音频文件，调用 Qwen-ASR 识别，并通过 SSE 返回 final/done 事件。",
+)
+async def qwen_asr_file_sse(
+    file: UploadFile = File(..., description="要识别的音频文件；推荐 WAV，服务端会统一转为 16kHz 单声道 WAV"),
+    mode: str = Form("online", description="兼容 FunASR 参数；Qwen-ASR 当前按整段识别返回 final"),
+    audio_fs: int = Form(16000, description="PCM 采样率；WAV 会自动读取文件头"),
+    hotwords: str = Form("", description="热词；没有可留空"),
+):
+    _ = mode
+    return build_qwen_audio_sse_response(
+        raw=await file.read(),
+        filename=file.filename or "audio.wav",
+        audio_fs=audio_fs,
+        hotwords=hotwords,
+    )
+
+
+@app.post(
+    "/qwen-asr/base64-sse",
+    summary="Qwen-ASR 上传完整 Base64 音频并返回 SSE 识别流",
+    description="请求体传完整音频 Base64，调用 Qwen-ASR 识别，并通过 SSE 返回 final/done 事件。",
+)
+async def qwen_asr_base64_sse(request: Base64AsrRequest):
+    return build_qwen_audio_sse_response(
+        raw=decode_audio_base64(request.audio_base64),
+        filename=request.filename,
+        audio_fs=request.audio_fs,
+        hotwords=request.hotwords,
+    )
+
+
+@app.post(
+    "/qwen-asr/upload-wav",
+    summary="Qwen-ASR 上传 WAV 文件并返回音频 ID",
+    description="只上传 WAV 文件并立即返回 audio_id。前端再用 audio_id 创建 Qwen-ASR 流式会话。",
+)
+async def upload_qwen_wav_file(
+    file: UploadFile = File(..., description="要上传的 WAV 文件；服务端会转换为 16kHz 单声道 PCM16 后暂存"),
+):
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+    filename = file.filename or "qwen-upload.wav"
+    if not filename.lower().endswith(".wav") and not raw.startswith(b"RIFF"):
+        raise HTTPException(status_code=400, detail="Only WAV upload is supported")
+    audio_bytes, sample_rate = normalize_wav_bytes(raw)
+    audio_id = uuid.uuid4().hex
+    qwen_uploaded_audios[audio_id] = UploadedAudio(filename=filename, audio_bytes=audio_bytes, sample_rate=sample_rate)
+    return {
+        "audio_id": audio_id,
+        "filename": filename,
+        "sample_rate": sample_rate,
+        "bytes": len(audio_bytes),
+        "provider": "qwen-asr",
+    }
+
+
+@app.post(
+    "/qwen-asr/uploaded-file-session/{audio_id}",
+    summary="Qwen-ASR 用已上传 WAV 创建识别会话",
+    description="前端先上传 WAV 得到 audio_id，再调用本接口创建 session_id，然后订阅 /qwen-asr/sse/{session_id}。",
+)
+async def create_qwen_uploaded_file_session(
+    audio_id: str = Path(..., description="通过 POST /qwen-asr/upload-wav 返回的音频 ID"),
+    mode: str = Form("online", description="兼容 FunASR 参数；Qwen-ASR 当前按整段识别返回 final"),
+    hotwords: str = Form("", description="热词；没有可留空"),
+):
+    _ = mode
+    uploaded = qwen_uploaded_audios.pop(audio_id, None)
+    if uploaded is None:
+        raise HTTPException(status_code=404, detail="Uploaded audio not found")
+    session_id = uuid.uuid4().hex
+    session = QwenSession(
+        filename=uploaded.filename,
+        audio_bytes=bytearray(uploaded.audio_bytes),
+        sample_rate=uploaded.sample_rate,
+        hotwords=hotwords,
+    )
+    session.task = asyncio.create_task(run_qwen_session_task(session))
+    qwen_sessions[session_id] = session
+    return {
+        "session_id": session_id,
+        "audio_id": audio_id,
+        "filename": uploaded.filename,
+        "provider": "qwen-asr",
+    }
+
+
+@app.post(
+    "/qwen-asr/session",
+    summary="Qwen-ASR 创建分片上传会话",
+    description="创建 Qwen-ASR 音频收集会话。持续推送分片后，调用 /qwen-asr/end/{session_id} 触发整段识别。",
+)
+async def create_qwen_session(
+    mode: str = Form("online", description="兼容 FunASR 参数；Qwen-ASR 当前按整段识别返回 final"),
+    audio_fs: int = Form(16000, description="后续推送 PCM 分片的采样率；推荐 16000"),
+    hotwords: str = Form("", description="热词；没有可留空"),
+):
+    _ = mode
+    session_id = uuid.uuid4().hex
+    qwen_sessions[session_id] = QwenSession(sample_rate=audio_fs, hotwords=hotwords)
+    return {"session_id": session_id, "provider": "qwen-asr"}
+
+
+@app.get(
+    "/qwen-asr/sse/{session_id}",
+    summary="Qwen-ASR 订阅 SSE 识别结果",
+    description="订阅 Qwen-ASR 会话结果。Qwen-ASR 当前输出 final/error/done 事件。",
+)
+async def qwen_session_sse(session_id: str = Path(..., description="通过 Qwen-ASR 会话接口创建得到的会话 ID")):
+    session = qwen_sessions.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Qwen session not found")
+
+    async def events():
+        try:
+            while True:
+                event, data = await session.queue.get()
+                yield sse_event(event, data)
+                if event == "done":
+                    break
+        finally:
+            old_session = qwen_sessions.pop(session_id, None)
+            if old_session and old_session.task:
+                old_session.task.cancel()
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers=SSE_HEADERS)
+
+
+@app.post(
+    "/qwen-asr/chunk-b64/{session_id}",
+    summary="Qwen-ASR 推送 Base64 音频分片",
+    description="向 Qwen-ASR 会话推送一段 Base64 音频。WAV 分片会转成 PCM 后累计；调用 end 后触发整段识别。",
+)
+async def send_qwen_chunk_base64(session_id: str, request: Base64ChunkRequest):
+    session = qwen_sessions.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Qwen session not found")
+    data = normalize_realtime_chunk_payload(decode_audio_base64(request.audio_base64))
+    session.audio_bytes.extend(data)
+    return {"ok": True, "bytes": len(data), "provider": "qwen-asr"}
+
+
+@app.post(
+    "/qwen-asr/end/{session_id}",
+    summary="Qwen-ASR 结束分片上传并触发识别",
+    description="结束 Qwen-ASR 分片上传会话，并在后台调用 Qwen-ASR。前端继续通过 SSE 接收 final/done。",
+)
+async def end_qwen_session(session_id: str = Path(..., description="通过 POST /qwen-asr/session 创建得到的会话 ID")):
+    session = qwen_sessions.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Qwen session not found")
+    if session.ending:
+        return {"ok": True, "provider": "qwen-asr"}
+    if not session.audio_bytes:
+        raise HTTPException(status_code=400, detail="Empty Qwen audio session")
+    session.ending = True
+    session.task = asyncio.create_task(run_qwen_session_task(session))
+    return {"ok": True, "provider": "qwen-asr"}
 
 
 if __name__ == "__main__":

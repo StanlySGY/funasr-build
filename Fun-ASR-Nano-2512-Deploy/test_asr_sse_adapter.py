@@ -18,14 +18,21 @@ from asr_sse_adapter import (
     connect_backend,
     create_session,
     create_uploaded_file_session,
+    create_qwen_session,
     decode_audio_base64,
     end_session,
     normalize_diagnostic_modes,
+    qwen_sessions,
+    qwen_uploaded_audios,
+    qwen_session_sse,
+    qwen_asr_file_sse,
     read_diagnostic_log_tail,
     send_chunk_base64,
     session_sse,
     sessions,
     upload_wav_file,
+    upload_qwen_wav_file,
+    end_qwen_session,
     uploaded_audios,
 )
 
@@ -113,6 +120,18 @@ class DecodeAudioBase64Test(unittest.TestCase):
 
         self.assertIn("/asr/upload-wav", paths)
         self.assertIn("/asr/uploaded-file-session/{audio_id}", paths)
+
+    def test_registers_qwen_asr_routes(self):
+        paths = {route.path for route in app.routes}
+
+        self.assertIn("/qwen-asr/file-sse", paths)
+        self.assertIn("/qwen-asr/base64-sse", paths)
+        self.assertIn("/qwen-asr/upload-wav", paths)
+        self.assertIn("/qwen-asr/uploaded-file-session/{audio_id}", paths)
+        self.assertIn("/qwen-asr/session", paths)
+        self.assertIn("/qwen-asr/sse/{session_id}", paths)
+        self.assertIn("/qwen-asr/chunk-b64/{session_id}", paths)
+        self.assertIn("/qwen-asr/end/{session_id}", paths)
 
     def test_normalizes_diagnostic_modes(self):
         self.assertEqual(["online", "2pass"], normalize_diagnostic_modes("online, 2pass"))
@@ -230,6 +249,70 @@ class DecodeAudioBase64Test(unittest.TestCase):
         self.assertIn('"is_speaking": true', sent[0])
         self.assertEqual(b"abcdef", sent[1])
         self.assertIn('"is_speaking": false', sent[2])
+
+    def test_qwen_file_sse_emits_final_and_done_events(self):
+        async def collect_events():
+            async def fake_transcribe(*args, **kwargs):
+                return "你好"
+
+            with patch("asr_sse_adapter.transcribe_qwen_audio", fake_transcribe):
+                response = await qwen_asr_file_sse(
+                    FakeUploadFile("input.wav", build_wav_bytes(16000, 1, 2, b"abcdef")),
+                    mode="online",
+                    audio_fs=16000,
+                    hotwords="",
+                )
+                chunks = []
+                async for chunk in response.body_iterator:
+                    if isinstance(chunk, bytes):
+                        chunk = chunk.decode("utf-8")
+                    chunks.append(chunk)
+                return "".join(chunks)
+
+        body = asyncio.run(collect_events())
+
+        self.assertIn("event: final", body)
+        self.assertIn('"text": "你好"', body)
+        self.assertIn('"provider": "qwen-asr"', body)
+        self.assertIn("event: done", body)
+
+    def test_qwen_chunk_session_runs_transcription_on_end(self):
+        async def run_case():
+            async def fake_transcribe(*args, **kwargs):
+                return "分片结果"
+
+            session_response = await create_qwen_session(mode="online", audio_fs=16000, hotwords="")
+            session_id = session_response["session_id"]
+            qwen_sessions[session_id].audio_bytes.extend(b"abcdef")
+            with patch("asr_sse_adapter.transcribe_qwen_audio", fake_transcribe):
+                await end_qwen_session(session_id)
+                response = await qwen_session_sse(session_id)
+                chunks = []
+                async for chunk in response.body_iterator:
+                    if isinstance(chunk, bytes):
+                        chunk = chunk.decode("utf-8")
+                    chunks.append(chunk)
+                return "".join(chunks), session_id in qwen_sessions
+
+        body, exists = asyncio.run(run_case())
+
+        self.assertIn("event: final", body)
+        self.assertIn('"text": "分片结果"', body)
+        self.assertIn("event: done", body)
+        self.assertFalse(exists)
+
+    def test_qwen_upload_wav_returns_audio_id(self):
+        response = asyncio.run(
+            upload_qwen_wav_file(FakeUploadFile("qwen.wav", build_wav_bytes(16000, 1, 2, b"abcdef")))
+        )
+        audio_id = response["audio_id"]
+
+        try:
+            self.assertIn(audio_id, qwen_uploaded_audios)
+            self.assertEqual("qwen.wav", response["filename"])
+            self.assertEqual(16000, response["sample_rate"])
+        finally:
+            qwen_uploaded_audios.pop(audio_id, None)
 
     def test_splits_realtime_base64_chunk_to_backend_stride(self):
         session_id = "chunk-split-test"

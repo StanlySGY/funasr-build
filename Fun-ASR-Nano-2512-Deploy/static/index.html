@@ -629,7 +629,7 @@
       </div>
 
       <div class="sidebar-footer">
-        建议先使用 <span class="kbd">文件识别</span> 验证服务；生产侧大文件可用 <span class="kbd">上传 WAV 流式</span> 分两步识别。
+        建议先使用 <span class="kbd">文件识别</span> 验证服务；需要 Qwen-ASR 时把引擎切到 <span class="kbd">Qwen-ASR</span>。
       </div>
     </aside>
 
@@ -637,7 +637,7 @@
       <header class="topbar">
         <div class="page-title">
           <h1>语音识别测试台</h1>
-          <p>在浏览器里直接调试文件流、先上传再识别、完整 Base64、实时 Base64 分片流。</p>
+          <p>在浏览器里直接调试 FunASR / Qwen-ASR 的文件流、先上传再识别、完整 Base64、实时 Base64 分片流。</p>
         </div>
         <div class="top-actions">
           <button id="healthBtn" class="btn secondary" type="button">刷新状态</button>
@@ -675,6 +675,15 @@
           </div>
 
           <div class="panel-body">
+            <div class="form-grid" style="margin-bottom: 18px;">
+              <div class="field full">
+                <label for="asrEngine">识别引擎</label>
+                <select id="asrEngine">
+                  <option value="funasr">FunASR 本地实时识别</option>
+                  <option value="qwen">Qwen-ASR 整段识别</option>
+                </select>
+              </div>
+            </div>
             <div class="mode-switch">
               <button class="mode-btn active" type="button" data-pane="filePane">文件</button>
               <button class="mode-btn" type="button" data-pane="uploadStreamPane">上传流式</button>
@@ -684,7 +693,7 @@
             </div>
 
             <section id="filePane" class="pane active">
-              <div class="callout">调用 <strong>POST /asr/file-sse</strong>，上传完整音频文件，直接消费 SSE 返回。</div>
+              <div class="callout">上传完整音频文件，直接消费 SSE 返回。FunASR 调用 <strong>POST /asr/file-sse</strong>，Qwen-ASR 调用 <strong>POST /qwen-asr/file-sse</strong>。</div>
               <div class="form-grid">
                 <div class="field full">
                   <label for="fileInput">音频文件</label>
@@ -717,7 +726,7 @@
             </section>
 
             <section id="uploadStreamPane" class="pane">
-              <div class="callout">分步 WAV 识别：先调用 <strong>POST /asr/upload-wav</strong> 上传文件拿 <strong>audio_id</strong>，再调用 <strong>POST /asr/uploaded-file-session/{audio_id}</strong> 创建会话并通过 SSE 收结果。</div>
+              <div class="callout">分步 WAV 识别：先上传文件拿 <strong>audio_id</strong>，再创建会话并通过 SSE 收结果。Qwen-ASR 使用同构的 <strong>/qwen-asr/upload-wav</strong> 链路。</div>
               <div class="form-grid">
                 <div class="field full">
                   <label for="uploadStreamFile">WAV 文件</label>
@@ -739,7 +748,8 @@
               <p class="helper">这个链路避免“上传文件”和“等待识别结果”绑在同一个请求里，适合文件上传时间较长的前端接入。</p>
               <details class="request-preview">
                 <summary>调用链路</summary>
-                <pre>POST /asr/upload-wav -> POST /asr/uploaded-file-session/{audio_id} -> GET /asr/sse/{session_id}</pre>
+                <pre>FunASR: POST /asr/upload-wav -> POST /asr/uploaded-file-session/{audio_id} -> GET /asr/sse/{session_id}
+Qwen-ASR: POST /qwen-asr/upload-wav -> POST /qwen-asr/uploaded-file-session/{audio_id} -> GET /qwen-asr/sse/{session_id}</pre>
               </details>
               <div class="actions">
                 <button id="uploadStreamRun" class="btn primary" type="button">上传并创建流式识别</button>
@@ -747,7 +757,7 @@
             </section>
 
             <section id="base64Pane" class="pane">
-              <div class="callout">调用 <strong>POST /asr/base64-sse</strong>，页面会把文件转成 Base64 后用 JSON 提交。</div>
+              <div class="callout">页面会把文件转成 Base64 后用 JSON 提交。FunASR 调用 <strong>POST /asr/base64-sse</strong>，Qwen-ASR 调用 <strong>POST /qwen-asr/base64-sse</strong>。</div>
               <div class="form-grid">
                 <div class="field full">
                   <label for="base64File">音频文件</label>
@@ -780,7 +790,7 @@
             </section>
 
             <section id="streamPane" class="pane">
-              <div class="callout">实时 Base64 流：创建会话，打开 SSE，再持续调用 <strong>POST /asr/chunk-b64/{session_id}</strong> 推送音频分片。</div>
+              <div class="callout">实时 Base64 流：创建会话，打开 SSE，再持续推送音频分片。FunASR 为实时后端；Qwen-ASR 会累计分片，并在 end 后整段识别返回 final。</div>
               <div class="form-grid">
                 <div class="field full">
                   <label for="streamFile">模拟实时流的音频文件</label>
@@ -806,9 +816,10 @@
               <p class="helper">接口支持两种分片：16k 单声道 PCM16 Base64，或每段都是完整 WAV 的 Base64。WAV 分片会在服务端自动转成 16k PCM16；当前页面演示仍使用浏览器解码后推 PCM 分片。</p>
               <details class="request-preview">
                 <summary>调用链路</summary>
-                <pre>POST /asr/session -> GET /asr/sse/{session_id} -> POST /asr/chunk-b64/{session_id} -> POST /asr/end/{session_id}
+                <pre>FunASR: POST /asr/session -> GET /asr/sse/{session_id} -> POST /asr/chunk-b64/{session_id} -> POST /asr/end/{session_id}
+Qwen-ASR: POST /qwen-asr/session -> GET /qwen-asr/sse/{session_id} -> POST /qwen-asr/chunk-b64/{session_id} -> POST /qwen-asr/end/{session_id}
 
-/asr/chunk-b64 请求体：
+chunk-b64 请求体：
 { "audio_base64": "16k PCM16 Base64 或完整 WAV 分片 Base64" }</pre>
               </details>
               <div class="actions">
@@ -1053,6 +1064,14 @@
       return document.querySelector(`#${id}`)?.value || fallback;
     }
 
+    function currentEnginePrefix() {
+      return formValue('asrEngine', 'funasr') === 'qwen' ? '/qwen-asr' : '/asr';
+    }
+
+    function currentSsePath(sessionId) {
+      return `${currentEnginePrefix()}/sse/${sessionId}`;
+    }
+
     function appendCommonForm(form, prefix) {
       form.append('mode', formValue(`${prefix}Mode`, 'online'));
       form.append('audio_fs', formValue(`${prefix}AudioFs`, '16000'));
@@ -1072,7 +1091,7 @@
         const form = new FormData();
         appendCommonForm(form, 'file');
         form.append('file', file, file.name);
-        const response = await fetch('/asr/file-sse', { method: 'POST', body: form });
+        const response = await fetch(`${currentEnginePrefix()}/file-sse`, { method: 'POST', body: form });
         await consumeSseResponse(response);
       } catch (error) {
         addEvent('error', error.message);
@@ -1100,7 +1119,7 @@
           decoder_chunk_look_back: 0,
           hotwords: formValue('base64Hotwords', ''),
         };
-        const response = await fetch('/asr/base64-sse', {
+        const response = await fetch(`${currentEnginePrefix()}/base64-sse`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
@@ -1122,7 +1141,7 @@
       try {
         const uploadForm = new FormData();
         uploadForm.append('file', file, file.name);
-        const uploadResponse = await fetch('/asr/upload-wav', { method: 'POST', body: uploadForm });
+        const uploadResponse = await fetch(`${currentEnginePrefix()}/upload-wav`, { method: 'POST', body: uploadForm });
         if (!uploadResponse.ok) throw new Error(await uploadResponse.text());
         const uploaded = await uploadResponse.json();
         addEvent('upload', uploaded);
@@ -1135,7 +1154,7 @@
         sessionForm.append('encoder_chunk_look_back', '4');
         sessionForm.append('decoder_chunk_look_back', '0');
         sessionForm.append('hotwords', formValue('uploadStreamHotwords', ''));
-        const sessionResponse = await fetch(`/asr/uploaded-file-session/${uploaded.audio_id}`, {
+        const sessionResponse = await fetch(`${currentEnginePrefix()}/uploaded-file-session/${uploaded.audio_id}`, {
           method: 'POST',
           body: sessionForm,
         });
@@ -1182,7 +1201,7 @@
       form.append('encoder_chunk_look_back', '4');
       form.append('decoder_chunk_look_back', '0');
       form.append('hotwords', formValue('streamHotwords', ''));
-      const response = await fetch('/asr/session', { method: 'POST', body: form });
+      const response = await fetch(`${currentEnginePrefix()}/session`, { method: 'POST', body: form });
       if (!response.ok) throw new Error(await response.text());
       return response.json();
     }
@@ -1190,7 +1209,8 @@
     function openSessionSse(sessionId) {
       if (state.eventSource) state.eventSource.close();
       state.streamDone = false;
-      state.eventSource = new EventSource(`/asr/sse/${sessionId}`);
+      state.ssePath = currentSsePath(sessionId);
+      state.eventSource = new EventSource(state.ssePath);
       for (const name of ['online', 'final', 'message', 'error', 'done']) {
         state.eventSource.addEventListener(name, (event) => {
           let data = event.data;
@@ -1219,7 +1239,7 @@
       if (!state.sessionId) return;
       const sessionId = state.sessionId;
       state.stopped = true;
-      const response = await fetch(`/asr/end/${sessionId}`, { method: 'POST' });
+      const response = await fetch(`${currentEnginePrefix()}/end/${sessionId}`, { method: 'POST' });
       if (!response.ok) throw new Error(await response.text());
       addEvent('log', `已发送结束信号：${sessionId}`);
     }
@@ -1244,7 +1264,7 @@
         const samplesPerChunk = Math.max(1600, Math.floor(16000 * chunkMs / 1000));
         for (let start = 0; start < pcm.length && !state.stopped; start += samplesPerChunk) {
           const chunk = pcm.subarray(start, Math.min(start + samplesPerChunk, pcm.length));
-          const response = await fetch(`/asr/chunk-b64/${session.session_id}`, {
+          const response = await fetch(`${currentEnginePrefix()}/chunk-b64/${session.session_id}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ audio_base64: pcm16ToBase64(chunk) }),
