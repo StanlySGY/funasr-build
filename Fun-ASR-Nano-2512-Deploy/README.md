@@ -457,3 +457,27 @@ PCM/WAV
 ```bash
 ffmpeg -y -i input.wav -ar 16000 -ac 1 -sample_fmt s16 output-16k.wav
 ```
+
+## 本地 Qwen-ASR 实验服务
+
+项目根目录提供 `docker-compose.qwen-asr-local.yml` 和 `start_qwen_asr_local_server.sh`，用于尝试在 ARM CPU 上启动本地 `Qwen/Qwen3-ASR-0.6B` 服务。
+
+启动命令：
+
+```bash
+./start_qwen_asr_local_server.sh
+```
+
+测试命令：
+
+```bash
+curl http://127.0.0.1:10100/health
+./test_qwen_asr_local_file_sse.sh example.wav
+```
+
+说明：
+
+- 本地 Qwen-ASR 服务暴露 `POST /v1/audio/transcriptions`。
+- `funasr-sse-adapter` 会通过 `QWEN_ASR_API_STYLE=transcriptions` 调用本地服务。
+- 对外仍使用已有 `/qwen-asr/*` 接口。
+- 这是 ARM CPU PoC，首次启动需要下载模型；性能和兼容性必须以服务器实测为准。
