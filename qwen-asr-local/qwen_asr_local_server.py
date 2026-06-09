@@ -46,6 +46,13 @@ def _load_model_sync() -> Any:
     if BACKEND != "transformers":
         raise RuntimeError("qwen-asr-local only supports QWEN_ASR_BACKEND=transformers")
 
+    model_path = Path(MODEL_ID)
+    if model_path.is_absolute() and not (model_path / "config.json").exists():
+        raise RuntimeError(
+            f"Local model is incomplete: missing {model_path / 'config.json'}. "
+            "Run ./download_qwen_asr_model.sh on the host before testing Qwen-ASR."
+        )
+
     dtype = {
         "float32": torch.float32,
         "fp32": torch.float32,
