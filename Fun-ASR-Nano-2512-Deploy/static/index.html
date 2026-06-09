@@ -895,6 +895,7 @@ chunk-b64 请求体：
     const state = {
       eventSource: null,
       sessionId: null,
+      sessionPrefix: null,
       stopped: false,
       streamDone: false,
       textParts: [],
@@ -1209,8 +1210,8 @@ chunk-b64 请求体：
     function openSessionSse(sessionId) {
       if (state.eventSource) state.eventSource.close();
       state.streamDone = false;
-      state.ssePath = currentSsePath(sessionId);
-      state.eventSource = new EventSource(state.ssePath);
+      state.sessionPrefix = currentEnginePrefix();
+      state.eventSource = new EventSource(`${state.sessionPrefix}/sse/${sessionId}`);
       for (const name of ['online', 'final', 'message', 'error', 'done']) {
         state.eventSource.addEventListener(name, (event) => {
           let data = event.data;
@@ -1221,6 +1222,7 @@ chunk-b64 请求体：
             state.eventSource.close();
             state.eventSource = null;
             state.sessionId = null;
+            state.sessionPrefix = null;
             els.streamStop.disabled = true;
           }
         });
@@ -1238,8 +1240,9 @@ chunk-b64 请求体：
     async function endCurrentSession() {
       if (!state.sessionId) return;
       const sessionId = state.sessionId;
+      const sessionPrefix = state.sessionPrefix || currentEnginePrefix();
       state.stopped = true;
-      const response = await fetch(`${currentEnginePrefix()}/end/${sessionId}`, { method: 'POST' });
+      const response = await fetch(`${sessionPrefix}/end/${sessionId}`, { method: 'POST' });
       if (!response.ok) throw new Error(await response.text());
       addEvent('log', `已发送结束信号：${sessionId}`);
     }
