@@ -29,6 +29,7 @@ TARGET_SAMPLE_RATE = int(os.environ.get("FUNASR_TARGET_SAMPLE_RATE", "16000"))
 DEFAULT_CHUNK_SIZE = [5, 10, 5]
 DEFAULT_CHUNK_INTERVAL = 10
 FAST_FILE_CHUNK_INTERVAL = int(os.environ.get("FUNASR_FILE_FAST_CHUNK_INTERVAL", "10"))
+FAST_FILE_CHUNK_MULTIPLIER = max(1, int(os.environ.get("FUNASR_FILE_FAST_CHUNK_MULTIPLIER", "2")))
 BACKEND_CONNECT_EXCEPTIONS = (OSError, EOFError, InvalidHandshake, InvalidMessage)
 DIAGNOSTIC_LOG_PATH = os.environ.get(
     "FUNASR_DIAGNOSTIC_LOG",
@@ -408,22 +409,23 @@ def build_init_message(
     encoder_chunk_look_back: int,
     decoder_chunk_look_back: int,
     hotwords: str,
+    skip_final_online_flush: bool = False,
 ) -> str:
-    return json.dumps(
-        {
-            "mode": mode,
-            "chunk_size": chunk_size,
-            "chunk_interval": chunk_interval,
-            "encoder_chunk_look_back": encoder_chunk_look_back,
-            "decoder_chunk_look_back": decoder_chunk_look_back,
-            "audio_fs": audio_fs,
-            "wav_name": wav_name,
-            "is_speaking": True,
-            "hotwords": hotwords,
-            "itn": True,
-        },
-        ensure_ascii=False,
-    )
+    payload = {
+        "mode": mode,
+        "chunk_size": chunk_size,
+        "chunk_interval": chunk_interval,
+        "encoder_chunk_look_back": encoder_chunk_look_back,
+        "decoder_chunk_look_back": decoder_chunk_look_back,
+        "audio_fs": audio_fs,
+        "wav_name": wav_name,
+        "is_speaking": True,
+        "hotwords": hotwords,
+        "itn": True,
+    }
+    if skip_final_online_flush:
+        payload["skip_final_online_flush"] = True
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def chunk_stride(sample_rate: int, chunk_size: list[int], chunk_interval: int) -> int:
@@ -759,9 +761,12 @@ def build_audio_sse_response(
     audio_bytes, sample_rate = read_audio_payload(filename, raw, audio_fs)
     stride = chunk_stride(sample_rate, chunks, chunk_interval)
     wav_name = filename or "upload"
+    fast_file_online = not realtime and mode == "online"
     backend_chunk_interval = chunk_interval
-    if not realtime and mode == "online":
+    send_stride = stride
+    if fast_file_online:
         backend_chunk_interval = max(1, FAST_FILE_CHUNK_INTERVAL)
+        send_stride = stride * FAST_FILE_CHUNK_MULTIPLIER
 
     async def events():
         queue: asyncio.Queue = asyncio.Queue()
@@ -778,6 +783,7 @@ def build_audio_sse_response(
                         encoder_chunk_look_back=encoder_chunk_look_back,
                         decoder_chunk_look_back=decoder_chunk_look_back,
                         hotwords=hotwords,
+                        skip_final_online_flush=fast_file_online,
                     )
                 )
                 recv_task = asyncio.create_task(receive_to_queue(ws, queue))
@@ -785,8 +791,8 @@ def build_audio_sse_response(
                 async def send_audio():
                     try:
                         if not realtime:
-                            for start in range(0, len(audio_bytes), stride):
-                                await ws.send(audio_bytes[start : start + stride])
+                            for start in range(0, len(audio_bytes), send_stride):
+                                await ws.send(audio_bytes[start : start + send_stride])
                             await ws.send(json.dumps({"is_speaking": False}))
                             return
                         sleep_sec = 60 * chunks[1] / chunk_interval / 1000

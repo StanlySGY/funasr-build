@@ -42,6 +42,7 @@ from concurrent.futures import ThreadPoolExecutor
 # issue见：https://github.com/modelscope/FunASR/issues/2741
 from funasr.models.fun_asr_nano.model import FunASRNano
 from funasr import AutoModel
+from funasr_ws_policy import coerce_bool, should_flush_final_online
 
 logging.basicConfig(level=logging.ERROR)
 
@@ -450,6 +451,7 @@ async def ws_serve(websocket, path=None):
     websocket.wav_name = "microphone"
     websocket.mode = "online" if DISABLE_OFFLINE_INFERENCE else "2pass"
     websocket.is_speaking = True
+    websocket.skip_final_online_flush = False
     
     print("new user connected", flush=True)
     diag("websocket_connect", session_id=websocket.diag_session_id, active_users=len(websocket_users))
@@ -470,6 +472,7 @@ async def ws_serve(websocket, path=None):
                         is_speaking=messagejson.get("is_speaking"),
                         chunk_size=messagejson.get("chunk_size"),
                         chunk_interval=messagejson.get("chunk_interval", websocket.chunk_interval),
+                        skip_final_online_flush=messagejson.get("skip_final_online_flush", websocket.skip_final_online_flush),
                     )
                     
                     if "is_speaking" in messagejson:
@@ -490,6 +493,8 @@ async def ws_serve(websocket, path=None):
                         websocket.status_dict_asr_online["decoder_chunk_look_back"] = messagejson["decoder_chunk_look_back"]
                     if "hotwords" in messagejson:
                         websocket.status_dict_asr["hotword"] = messagejson["hotwords"]
+                    if "skip_final_online_flush" in messagejson:
+                        websocket.skip_final_online_flush = coerce_bool(messagejson["skip_final_online_flush"])
                     if "mode" in messagejson:
                         requested_mode = messagejson["mode"]
                         if DISABLE_OFFLINE_INFERENCE and requested_mode in OFFLINE_MODES:
@@ -581,7 +586,12 @@ async def ws_serve(websocket, path=None):
                 
                 # 3. 处理语音结束或流结束 -> 触发离线 ASR + 标点恢复
                 if speech_end_i != -1 or not websocket.is_speaking:
-                    if not websocket.is_speaking and websocket.mode == "online" and frames_asr_online:
+                    if should_flush_final_online(
+                        mode=websocket.mode,
+                        is_speaking=websocket.is_speaking,
+                        has_buffered_online_frames=bool(frames_asr_online),
+                        skip_final_online_flush=websocket.skip_final_online_flush,
+                    ):
                         audio_in = b"".join(frames_asr_online)
                         websocket.status_dict_asr_online["is_final"] = True
                         try:

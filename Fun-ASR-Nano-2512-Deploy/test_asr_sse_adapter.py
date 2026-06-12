@@ -331,10 +331,11 @@ class DecodeAudioBase64Test(unittest.TestCase):
         sent, sleep_calls, body = asyncio.run(run_case())
         binary_chunks = [item for item in sent if isinstance(item, bytes)]
 
-        self.assertGreater(len(binary_chunks), 1)
+        self.assertEqual(2, len(binary_chunks))
         self.assertEqual(b"\x00\x00" * 3000, b"".join(binary_chunks))
         self.assertEqual([], sleep_calls)
         self.assertIn('"chunk_interval": 10', sent[0])
+        self.assertIn('"skip_final_online_flush": true', sent[0])
         self.assertIn("event: online", body)
         self.assertIn("event: done", body)
 
@@ -387,6 +388,7 @@ class DecodeAudioBase64Test(unittest.TestCase):
         self.assertGreater(len(binary_chunks), 1)
         self.assertGreater(len(sleep_calls), 0)
         self.assertIn('"chunk_interval": 10', sent[0])
+        self.assertNotIn("skip_final_online_flush", sent[0])
 
     def test_complete_file_sse_suppresses_backend_close_without_frame_after_end(self):
         async def run_case():
