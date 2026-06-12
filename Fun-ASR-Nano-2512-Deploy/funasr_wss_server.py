@@ -42,7 +42,7 @@ from concurrent.futures import ThreadPoolExecutor
 # issue见：https://github.com/modelscope/FunASR/issues/2741
 from funasr.models.fun_asr_nano.model import FunASRNano
 from funasr import AutoModel
-from funasr_ws_policy import coerce_bool, should_flush_final_online
+from funasr_ws_policy import coerce_bool, should_flush_final_online, should_run_online_chunk
 
 logging.basicConfig(level=logging.ERROR)
 
@@ -452,6 +452,7 @@ async def ws_serve(websocket, path=None):
     websocket.mode = "online" if DISABLE_OFFLINE_INFERENCE else "2pass"
     websocket.is_speaking = True
     websocket.skip_final_online_flush = False
+    websocket.defer_online_until_end = False
     
     print("new user connected", flush=True)
     diag("websocket_connect", session_id=websocket.diag_session_id, active_users=len(websocket_users))
@@ -473,6 +474,7 @@ async def ws_serve(websocket, path=None):
                         chunk_size=messagejson.get("chunk_size"),
                         chunk_interval=messagejson.get("chunk_interval", websocket.chunk_interval),
                         skip_final_online_flush=messagejson.get("skip_final_online_flush", websocket.skip_final_online_flush),
+                        defer_online_until_end=messagejson.get("defer_online_until_end", websocket.defer_online_until_end),
                     )
                     
                     if "is_speaking" in messagejson:
@@ -495,6 +497,8 @@ async def ws_serve(websocket, path=None):
                         websocket.status_dict_asr["hotword"] = messagejson["hotwords"]
                     if "skip_final_online_flush" in messagejson:
                         websocket.skip_final_online_flush = coerce_bool(messagejson["skip_final_online_flush"])
+                    if "defer_online_until_end" in messagejson:
+                        websocket.defer_online_until_end = coerce_bool(messagejson["defer_online_until_end"])
                     if "mode" in messagejson:
                         requested_mode = messagejson["mode"]
                         if DISABLE_OFFLINE_INFERENCE and requested_mode in OFFLINE_MODES:
@@ -551,18 +555,20 @@ async def ws_serve(websocket, path=None):
                     websocket.status_dict_asr_online["is_final"] = speech_end_i != -1
                     
                     # 根据 chunk 间隔或语音结束信号触发在线推理
-                    if (len(frames_asr_online) % websocket.chunk_interval == 0 
-                        or websocket.status_dict_asr_online["is_final"]):
-                        
-                        if websocket.mode == "2pass" or websocket.mode == "online":
-                            audio_in = b"".join(frames_asr_online)
-                            try:
-                                await async_asr_online(websocket, audio_in)
-                            except Exception as e:
-                                print(f"error in asr streaming: {e}")
-                                import traceback
-                                traceback.print_exc()
-                        
+                    if should_run_online_chunk(
+                        mode=websocket.mode,
+                        defer_online_until_end=websocket.defer_online_until_end,
+                        reached_chunk_interval=len(frames_asr_online) % websocket.chunk_interval == 0,
+                        is_final=websocket.status_dict_asr_online["is_final"],
+                    ):
+                        audio_in = b"".join(frames_asr_online)
+                        try:
+                            await async_asr_online(websocket, audio_in)
+                        except Exception as e:
+                            print(f"error in asr streaming: {e}")
+                            import traceback
+                            traceback.print_exc()
+
                         frames_asr_online = [] # 清空在线缓冲区
 
                     # 2. 送入 VAD 检测

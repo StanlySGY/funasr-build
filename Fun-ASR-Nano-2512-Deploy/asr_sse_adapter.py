@@ -29,7 +29,7 @@ TARGET_SAMPLE_RATE = int(os.environ.get("FUNASR_TARGET_SAMPLE_RATE", "16000"))
 DEFAULT_CHUNK_SIZE = [5, 10, 5]
 DEFAULT_CHUNK_INTERVAL = 10
 FAST_FILE_CHUNK_INTERVAL = int(os.environ.get("FUNASR_FILE_FAST_CHUNK_INTERVAL", "10"))
-FAST_FILE_CHUNK_MULTIPLIER = max(1, int(os.environ.get("FUNASR_FILE_FAST_CHUNK_MULTIPLIER", "2")))
+FAST_FILE_CHUNK_MULTIPLIER = max(1, int(os.environ.get("FUNASR_FILE_FAST_CHUNK_MULTIPLIER", "10")))
 BACKEND_CONNECT_EXCEPTIONS = (OSError, EOFError, InvalidHandshake, InvalidMessage)
 DIAGNOSTIC_LOG_PATH = os.environ.get(
     "FUNASR_DIAGNOSTIC_LOG",
@@ -410,6 +410,7 @@ def build_init_message(
     decoder_chunk_look_back: int,
     hotwords: str,
     skip_final_online_flush: bool = False,
+    defer_online_until_end: bool = False,
 ) -> str:
     payload = {
         "mode": mode,
@@ -425,6 +426,8 @@ def build_init_message(
     }
     if skip_final_online_flush:
         payload["skip_final_online_flush"] = True
+    if defer_online_until_end:
+        payload["defer_online_until_end"] = True
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -783,7 +786,7 @@ def build_audio_sse_response(
                         encoder_chunk_look_back=encoder_chunk_look_back,
                         decoder_chunk_look_back=decoder_chunk_look_back,
                         hotwords=hotwords,
-                        skip_final_online_flush=fast_file_online,
+                        defer_online_until_end=fast_file_online,
                     )
                 )
                 recv_task = asyncio.create_task(receive_to_queue(ws, queue))
