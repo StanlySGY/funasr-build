@@ -334,7 +334,7 @@ class DecodeAudioBase64Test(unittest.TestCase):
         self.assertGreater(len(binary_chunks), 1)
         self.assertEqual(b"\x00\x00" * 3000, b"".join(binary_chunks))
         self.assertEqual([], sleep_calls)
-        self.assertIn('"chunk_interval": 20', sent[0])
+        self.assertIn('"chunk_interval": 10', sent[0])
         self.assertIn("event: online", body)
         self.assertIn("event: done", body)
 
