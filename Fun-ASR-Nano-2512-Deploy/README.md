@@ -405,6 +405,37 @@ curl -N -X POST "http://127.0.0.1:10097/asr/base64-sse" \
 
 返回格式与 `/asr/file-sse` 一致，仍然是 SSE `online` / `final` / `error` / `done` 事件。
 
+### sherpa-onnx 快速文件转写接口
+
+如果已经按 `sherpa-onnx-local/README.md` 启动本地 sherpa-onnx 服务，统一 SSE Adapter 也会暴露 sherpa-onnx 路由。ARM CPU 服务器使用 `docker-compose.full.cpu.server.yml` 时，默认地址是：
+
+```bash
+/usr/bin/time -f 'elapsed=%E' curl -N -sS \
+  -X POST "http://127.0.0.1:10098/sherpa-onnx/file-sse" \
+  -F "file=@example.wav" \
+  -F "mode=offline"
+```
+
+JSON/Base64 调用方使用：
+
+```bash
+AUDIO_B64=$(base64 -w 0 example.wav)
+
+curl -N -X POST "http://127.0.0.1:10098/sherpa-onnx/base64-sse" \
+  -H "Content-Type: application/json" \
+  -d "$(jq -n --arg audio "$AUDIO_B64" '{audio_base64:$audio, filename:"example.wav", mode:"offline", audio_fs:16000}')"
+```
+
+返回事件为 `final` / `error` / `done`，成功时 `provider` 为 `sherpa-onnx`：
+
+```text
+event: final
+data: {"mode":"sherpa-onnx","text":"...","wav_name":"example.wav","is_final":true,"provider":"sherpa-onnx"}
+
+event: done
+data: {}
+```
+
 ### 实时会话接口
 
 创建会话：

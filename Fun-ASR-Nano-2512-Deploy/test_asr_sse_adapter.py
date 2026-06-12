@@ -29,6 +29,7 @@ from asr_sse_adapter import (
     qwen_uploaded_audios,
     qwen_session_sse,
     qwen_asr_file_sse,
+    sherpa_onnx_file_sse,
     read_diagnostic_log_tail,
     send_chunk_base64,
     send_qwen_chunk_base64,
@@ -139,6 +140,12 @@ class DecodeAudioBase64Test(unittest.TestCase):
         self.assertIn("/qwen-asr/sse/{session_id}", paths)
         self.assertIn("/qwen-asr/chunk-b64/{session_id}", paths)
         self.assertIn("/qwen-asr/end/{session_id}", paths)
+
+    def test_registers_sherpa_onnx_routes(self):
+        paths = {route.path for route in app.routes}
+
+        self.assertIn("/sherpa-onnx/file-sse", paths)
+        self.assertIn("/sherpa-onnx/base64-sse", paths)
 
     def test_normalizes_diagnostic_modes(self):
         self.assertEqual(["online", "2pass"], normalize_diagnostic_modes("online, 2pass"))
@@ -281,6 +288,31 @@ class DecodeAudioBase64Test(unittest.TestCase):
         self.assertIn("event: final", body)
         self.assertIn('"text": "你好"', body)
         self.assertIn('"provider": "qwen-asr"', body)
+        self.assertIn("event: done", body)
+
+    def test_sherpa_onnx_file_sse_emits_final_and_done_events(self):
+        async def collect_events():
+            async def fake_transcribe(*args, **kwargs):
+                return "你看这是一个语音合成测试"
+
+            with patch("asr_sse_adapter.transcribe_sherpa_onnx_audio", fake_transcribe):
+                response = await sherpa_onnx_file_sse(
+                    FakeUploadFile("input.wav", build_wav_bytes(16000, 1, 2, b"abcdef")),
+                    audio_fs=16000,
+                    hotwords="",
+                )
+                chunks = []
+                async for chunk in response.body_iterator:
+                    if isinstance(chunk, bytes):
+                        chunk = chunk.decode("utf-8")
+                    chunks.append(chunk)
+                return "".join(chunks)
+
+        body = asyncio.run(collect_events())
+
+        self.assertIn("event: final", body)
+        self.assertIn('"text": "你看这是一个语音合成测试"', body)
+        self.assertIn('"provider": "sherpa-onnx"', body)
         self.assertIn("event: done", body)
 
     def test_complete_file_sse_defaults_to_fast_chunk_burst_without_realtime_sleep(self):

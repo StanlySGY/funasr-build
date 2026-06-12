@@ -50,6 +50,9 @@ QWEN_ASR_API_KEY = os.environ.get("QWEN_ASR_API_KEY") or os.environ.get("DASHSCO
 QWEN_ASR_MODEL = os.environ.get("QWEN_ASR_MODEL", "qwen3-asr-flash")
 QWEN_ASR_API_STYLE = os.environ.get("QWEN_ASR_API_STYLE", "chat").lower()
 QWEN_ASR_TIMEOUT_SEC = float(os.environ.get("QWEN_ASR_TIMEOUT_SEC", "120"))
+SHERPA_ONNX_BASE_URL = os.environ.get("SHERPA_ONNX_BASE_URL", "http://127.0.0.1:10110/v1").rstrip("/")
+SHERPA_ONNX_MODEL = os.environ.get("SHERPA_ONNX_MODEL", "sherpa-onnx")
+SHERPA_ONNX_TIMEOUT_SEC = float(os.environ.get("SHERPA_ONNX_TIMEOUT_SEC", "120"))
 MAX_AUDIO_BYTES = int(os.environ.get("ASR_MAX_AUDIO_BYTES", str(50 * 1024 * 1024)))
 SESSION_IDLE_TTL_SEC = float(os.environ.get("ASR_SESSION_IDLE_TTL_SEC", str(30 * 60)))
 CLEANUP_INTERVAL_SEC = float(os.environ.get("ASR_CLEANUP_INTERVAL_SEC", "60"))
@@ -68,15 +71,18 @@ FunASR WebSocket 的 SSE 封装服务，面向业务系统提供语音识别接�
 ### 0. 引擎选择
 - `/asr/*`：使用本地 FunASR WebSocket 后端，适合 ARM CPU 稳定版实时识别。
 - `/qwen-asr/*`：使用 Qwen-ASR 适配层，接口形态与 `/asr/*` 尽量保持一致；当前按整段音频调用 Qwen-ASR，并通过 SSE 返回 `final` 与 `done`。
+- `/sherpa-onnx/*`：使用本地 sherpa-onnx 服务，适合 ARM CPU 上的完整文件快速转写；当前按整段音频返回 `final` 与 `done`。
 
 ### 1. 上传完整音频文件
 使用 `POST /asr/file-sse`，适合已有 `.wav` 或 `.pcm` 文件并希望一次请求直接返回 SSE 识别流的场景。
 完整文件默认使用快速发送模式；如需模拟实时播放，可传 `realtime=true`。
 Qwen-ASR 对应接口为 `POST /qwen-asr/file-sse`。
+sherpa-onnx 对应接口为 `POST /sherpa-onnx/file-sse`。
 
 ### 2. 上传完整 Base64 音频
 使用 `POST /asr/base64-sse`，适合前端或业务系统已经拿到完整音频 Base64 的场景。
 Qwen-ASR 对应接口为 `POST /qwen-asr/base64-sse`。
+sherpa-onnx 对应接口为 `POST /sherpa-onnx/base64-sse`。
 
 ### 3. 先上传 WAV，再创建流式识别会话
 适合文件上传可能较慢、不希望前端一直等待识别请求的场景：
@@ -120,6 +126,12 @@ SSE 返回格式为 `event: 事件名` 和 `data: JSON`：
 - `QWEN_ASR_BASE_URL`：默认 `https://dashscope.aliyuncs.com/compatible-mode/v1`
 - `QWEN_ASR_MODEL`：默认 `qwen3-asr-flash`
 - `QWEN_ASR_API_STYLE`：默认 `chat`；若接本地 OpenAI 兼容转写服务，可设为 `transcriptions`
+
+## sherpa-onnx 配置
+
+- `SHERPA_ONNX_BASE_URL`：默认 `http://127.0.0.1:10110/v1`
+- `SHERPA_ONNX_MODEL`：默认 `sherpa-onnx`
+- `SHERPA_ONNX_TIMEOUT_SEC`：默认 `120`
 """
 
 app = FastAPI(title="FunASR SSE 语音识别服务", description=API_DESCRIPTION, version="1.0.0")
@@ -403,6 +415,61 @@ def call_qwen_asr(wav_bytes: bytes, filename: str = "audio.wav", hotwords: str =
 
 async def transcribe_qwen_audio(wav_bytes: bytes, filename: str = "audio.wav", hotwords: str = "") -> str:
     return await asyncio.to_thread(call_qwen_asr, wav_bytes, filename, hotwords)
+
+
+def normalize_whole_audio_payload(filename: str, data: bytes, audio_fs: int) -> tuple[bytes, int]:
+    if data.startswith(b"RIFF") or filename.lower().endswith(".wav"):
+        return normalize_wav_bytes(data)
+    return normalize_sample_rate(data, audio_fs)
+
+
+def post_sherpa_onnx_transcription(url: str, wav_bytes: bytes, filename: str) -> dict:
+    boundary = f"----sherpa-onnx-{uuid.uuid4().hex}"
+    fields = [("model", SHERPA_ONNX_MODEL)]
+    body = bytearray()
+    for name, value in fields:
+        body.extend(f"--{boundary}\r\n".encode())
+        body.extend(f'Content-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
+    body.extend(f"--{boundary}\r\n".encode())
+    body.extend(
+        (
+            f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+            "Content-Type: audio/wav\r\n\r\n"
+        ).encode()
+    )
+    body.extend(wav_bytes)
+    body.extend(f"\r\n--{boundary}--\r\n".encode())
+
+    request = urllib.request.Request(
+        url,
+        data=bytes(body),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=SHERPA_ONNX_TIMEOUT_SEC) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "ignore")
+        raise RuntimeError(f"sherpa-onnx HTTP {exc.code}: {detail}") from exc
+
+
+def sherpa_onnx_text_from_response(payload: dict) -> str:
+    return str(payload.get("text") or "")
+
+
+def call_sherpa_onnx_asr(wav_bytes: bytes, filename: str = "audio.wav", hotwords: str = "") -> str:
+    _ = hotwords
+    payload = post_sherpa_onnx_transcription(
+        f"{SHERPA_ONNX_BASE_URL}/audio/transcriptions",
+        wav_bytes,
+        filename,
+    )
+    return sherpa_onnx_text_from_response(payload)
+
+
+async def transcribe_sherpa_onnx_audio(wav_bytes: bytes, filename: str = "audio.wav", hotwords: str = "") -> str:
+    return await asyncio.to_thread(call_sherpa_onnx_asr, wav_bytes, filename, hotwords)
 
 
 def build_init_message(
@@ -872,6 +939,16 @@ def qwen_final_payload(text: str, filename: str) -> dict:
     }
 
 
+def sherpa_onnx_final_payload(text: str, filename: str) -> dict:
+    return {
+        "mode": "sherpa-onnx",
+        "text": text,
+        "wav_name": filename,
+        "is_final": True,
+        "provider": "sherpa-onnx",
+    }
+
+
 def build_qwen_audio_sse_response(
     *,
     raw: bytes,
@@ -889,6 +966,28 @@ def build_qwen_audio_sse_response(
             yield sse_event("final", qwen_final_payload(text, filename or "audio.wav"))
         except Exception as exc:
             yield sse_event("error", {"message": str(exc), "provider": "qwen-asr"})
+        yield sse_event("done", {})
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers=SSE_HEADERS)
+
+
+def build_sherpa_onnx_audio_sse_response(
+    *,
+    raw: bytes,
+    filename: str,
+    audio_fs: int,
+    hotwords: str,
+) -> StreamingResponse:
+    ensure_audio_payload_allowed(raw)
+    audio_bytes, sample_rate = normalize_whole_audio_payload(filename, raw, audio_fs)
+    wav_bytes = pcm_to_wav_bytes(audio_bytes, sample_rate)
+
+    async def events():
+        try:
+            text = await transcribe_sherpa_onnx_audio(wav_bytes, filename or "audio.wav", hotwords)
+            yield sse_event("final", sherpa_onnx_final_payload(text, filename or "audio.wav"))
+        except Exception as exc:
+            yield sse_event("error", {"message": str(exc), "provider": "sherpa-onnx"})
         yield sse_event("done", {})
 
     return StreamingResponse(events(), media_type="text/event-stream", headers=SSE_HEADERS)
@@ -1199,6 +1298,44 @@ async def qwen_asr_base64_sse(request: Base64AsrRequest):
     raw = decode_audio_base64(request.audio_base64)
     ensure_audio_payload_allowed(raw)
     return build_qwen_audio_sse_response(
+        raw=raw,
+        filename=request.filename,
+        audio_fs=request.audio_fs,
+        hotwords=request.hotwords,
+    )
+
+
+@app.post(
+    "/sherpa-onnx/file-sse",
+    summary="sherpa-onnx 上传音频文件并返回 SSE 识别流",
+    description="上传完整音频文件，调用本地 sherpa-onnx 服务识别，并通过 SSE 返回 final/done 事件。",
+)
+async def sherpa_onnx_file_sse(
+    file: UploadFile = File(..., description="要识别的音频文件；推荐 WAV，服务端会统一转为 16kHz 单声道 WAV"),
+    mode: str = Form("offline", description="兼容 FunASR 参数；sherpa-onnx 当前按整段识别返回 final"),
+    audio_fs: int = Form(16000, description="PCM 采样率；WAV 会自动读取文件头"),
+    hotwords: str = Form("", description="热词；当前本地 sherpa-onnx 服务不使用该参数"),
+):
+    _ = mode
+    raw = await file.read()
+    ensure_audio_payload_allowed(raw)
+    return build_sherpa_onnx_audio_sse_response(
+        raw=raw,
+        filename=file.filename or "audio.wav",
+        audio_fs=audio_fs,
+        hotwords=hotwords,
+    )
+
+
+@app.post(
+    "/sherpa-onnx/base64-sse",
+    summary="sherpa-onnx 上传完整 Base64 音频并返回 SSE 识别流",
+    description="请求体传完整音频 Base64，调用本地 sherpa-onnx 服务识别，并通过 SSE 返回 final/done 事件。",
+)
+async def sherpa_onnx_base64_sse(request: Base64AsrRequest):
+    raw = decode_audio_base64(request.audio_base64)
+    ensure_audio_payload_allowed(raw)
+    return build_sherpa_onnx_audio_sse_response(
         raw=raw,
         filename=request.filename,
         audio_fs=request.audio_fs,

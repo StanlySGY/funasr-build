@@ -98,9 +98,20 @@ curl -s http://127.0.0.1:10110/health
 
 ## SSE 接口
 
+独立 sherpa-onnx 服务接口：
+
 ```bash
 /usr/bin/time -f 'elapsed=%E' curl -N -sS \
   -X POST http://127.0.0.1:10110/asr/file-sse \
+  -F "file=@./test.wav" \
+  -F "mode=offline"
+```
+
+启动 `funasr-sse-adapter` 后，也可以走统一业务接口：
+
+```bash
+/usr/bin/time -f 'elapsed=%E' curl -N -sS \
+  -X POST http://127.0.0.1:10098/sherpa-onnx/file-sse \
   -F "file=@./test.wav" \
   -F "mode=offline"
 ```
@@ -139,7 +150,7 @@ SHERPA_ONNX_PROVIDER=cpu
 
 # sherpa-onnx
 /usr/bin/time -f 'elapsed=%E' curl -N -sS \
-  -X POST http://127.0.0.1:10110/asr/file-sse \
+  -X POST http://127.0.0.1:10098/sherpa-onnx/file-sse \
   -F "file=@./test.wav" \
   -F "mode=offline"
 ```
