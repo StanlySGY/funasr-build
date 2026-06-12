@@ -332,7 +332,7 @@ class DecodeAudioBase64Test(unittest.TestCase):
         self.assertEqual(1, len(binary_chunks))
         self.assertEqual(b"\x00\x00" * 3000, binary_chunks[0])
         self.assertEqual([], sleep_calls)
-        self.assertIn('"chunk_interval": 1', sent[0])
+        self.assertIn('"chunk_interval": 2', sent[0])
         self.assertIn("event: online", body)
         self.assertIn("event: done", body)
 
@@ -385,6 +385,51 @@ class DecodeAudioBase64Test(unittest.TestCase):
         self.assertGreater(len(binary_chunks), 1)
         self.assertGreater(len(sleep_calls), 0)
         self.assertIn('"chunk_interval": 10', sent[0])
+
+    def test_complete_file_sse_suppresses_backend_close_without_frame_after_end(self):
+        async def run_case():
+            websocket = FakeWebSocket()
+            end_sent = asyncio.Event()
+
+            async def fake_send(data):
+                websocket.sent.append(data)
+                if isinstance(data, str) and '"is_speaking": false' in data:
+                    end_sent.set()
+
+            websocket.send = fake_send
+
+            async def fake_connect_backend():
+                return websocket
+
+            async def fake_receive_to_queue(ws, queue):
+                await end_sent.wait()
+                await queue.put(("error", {"message": "no close frame received or sent"}))
+                await queue.put(("done", {}))
+
+            wav_payload = build_wav_bytes(16000, 1, 2, b"\x00\x00" * 3000)
+            with patch("asr_sse_adapter.connect_backend", fake_connect_backend), \
+                 patch("asr_sse_adapter.receive_to_queue", fake_receive_to_queue):
+                response = build_audio_sse_response(
+                    raw=wav_payload,
+                    filename="input.wav",
+                    mode="online",
+                    audio_fs=16000,
+                    chunk_size="5,10,5",
+                    chunk_interval=10,
+                    encoder_chunk_look_back=4,
+                    decoder_chunk_look_back=0,
+                    hotwords="",
+                )
+                chunks = []
+                async for chunk in response.body_iterator:
+                    chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        body = asyncio.run(run_case())
+
+        self.assertNotIn("event: error", body)
+        self.assertNotIn("no close frame", body)
+        self.assertIn("event: done", body)
 
     def test_qwen_chunk_session_runs_transcription_on_end(self):
         async def run_case():

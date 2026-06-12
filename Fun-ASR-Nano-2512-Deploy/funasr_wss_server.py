@@ -581,6 +581,16 @@ async def ws_serve(websocket, path=None):
                 
                 # 3. 处理语音结束或流结束 -> 触发离线 ASR + 标点恢复
                 if speech_end_i != -1 or not websocket.is_speaking:
+                    if not websocket.is_speaking and websocket.mode == "online" and frames_asr_online:
+                        audio_in = b"".join(frames_asr_online)
+                        websocket.status_dict_asr_online["is_final"] = True
+                        try:
+                            await async_asr_online(websocket, audio_in)
+                        except Exception as e:
+                            print(f"error in final online asr flush: {e}")
+                            import traceback
+                            traceback.print_exc()
+
                     if websocket.mode == "2pass" or websocket.mode == "offline":
                         audio_in = b"".join(frames_asr)
                         try:

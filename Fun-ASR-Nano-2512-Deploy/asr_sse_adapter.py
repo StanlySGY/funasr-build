@@ -758,7 +758,7 @@ def build_audio_sse_response(
     wav_name = filename or "upload"
     backend_chunk_interval = chunk_interval
     if not realtime and mode == "online":
-        backend_chunk_interval = 1
+        backend_chunk_interval = 2
 
     async def events():
         queue: asyncio.Queue = asyncio.Queue()
@@ -810,12 +810,7 @@ def build_audio_sse_response(
                         break
                     if event in {"online", "final", "message"}:
                         received_result = True
-                    if (
-                        end_sent.is_set()
-                        and received_result
-                        and event == "error"
-                        and "no close frame" in data.get("message", "")
-                    ):
+                    if end_sent.is_set() and is_backend_close_without_frame(event, data):
                         break
                     yield sse_event(event, data)
                     if event == "done":
