@@ -19,6 +19,20 @@ tokens.txt
 mkdir -p /data/maas/sgy_arm/sherpa-onnx-models
 ```
 
+如果该目录没有写权限，二选一：
+
+```bash
+# 有 sudo 时，修目录归属
+sudo mkdir -p /data/maas/sgy_arm/sherpa-onnx-models
+sudo chown -R "$USER:$USER" /data/maas/sgy_arm/sherpa-onnx-models
+```
+
+```bash
+# 没有 sudo 时，使用当前项目下的模型目录
+mkdir -p "$PWD/sherpa-onnx-models"
+export SHERPA_ONNX_HOST_MODEL_DIR="$PWD/sherpa-onnx-models"
+```
+
 可直接使用仓库里的下载脚本：
 
 ```bash
@@ -42,7 +56,7 @@ https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-p
 
 ```bash
 SHERPA_ONNX_MODEL_URL="https://example.com/your-model.tar.bz2" \
-SHERPA_ONNX_MODEL_DIR="/data/maas/sgy_arm/sherpa-onnx-models" \
+SHERPA_ONNX_HOST_MODEL_DIR="/data/maas/sgy_arm/sherpa-onnx-models" \
 bash sherpa-onnx-local/download_model.sh
 ```
 

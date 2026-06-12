@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODEL_DIR="${SHERPA_ONNX_MODEL_DIR:-/data/maas/sgy_arm/sherpa-onnx-models}"
+MODEL_DIR="${SHERPA_ONNX_HOST_MODEL_DIR:-${SHERPA_ONNX_MODEL_DIR:-/data/maas/sgy_arm/sherpa-onnx-models}}"
 MODEL_URL="${SHERPA_ONNX_MODEL_URL:-https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-paraformer-zh-2023-09-14.tar.bz2}"
 WORK_DIR="${TMPDIR:-/tmp}/sherpa-onnx-model-download"
 ARCHIVE="${WORK_DIR}/${MODEL_URL##*/}"
 
 mkdir -p "${MODEL_DIR}" "${WORK_DIR}"
+
+if [ ! -w "${MODEL_DIR}" ]; then
+  echo "No write permission for model dir: ${MODEL_DIR}" >&2
+  echo "Either fix ownership, or set SHERPA_ONNX_HOST_MODEL_DIR to a writable directory." >&2
+  exit 1
+fi
 
 if [ -f "${MODEL_DIR}/tokens.txt" ] && { [ -f "${MODEL_DIR}/model.int8.onnx" ] || [ -f "${MODEL_DIR}/model.onnx" ]; }; then
   echo "sherpa-onnx model already exists in ${MODEL_DIR}"
@@ -18,7 +24,9 @@ echo "Downloading sherpa-onnx model:"
 echo "  url: ${MODEL_URL}"
 echo "  dir: ${MODEL_DIR}"
 
-if command -v curl >/dev/null 2>&1; then
+if [ -f "${ARCHIVE}" ]; then
+  echo "Using existing archive: ${ARCHIVE}"
+elif command -v curl >/dev/null 2>&1; then
   curl -L --fail --retry 3 -o "${ARCHIVE}" "${MODEL_URL}"
 elif command -v wget >/dev/null 2>&1; then
   wget -O "${ARCHIVE}" "${MODEL_URL}"

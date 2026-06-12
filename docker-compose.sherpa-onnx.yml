@@ -18,7 +18,7 @@ services:
       - SHERPA_ONNX_FEATURE_DIM=80
       - SHERPA_ONNX_DECODING_METHOD=greedy_search
     volumes:
-      - /data/maas/sgy_arm/sherpa-onnx-models:/models
+      - ${SHERPA_ONNX_HOST_MODEL_DIR:-/data/maas/sgy_arm/sherpa-onnx-models}:/models
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:10110/health',timeout=2).status==200 else 1)"]
