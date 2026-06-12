@@ -376,6 +376,13 @@
       box-shadow: var(--shadow-soft);
     }
 
+    .mode-switch button:disabled,
+    .nav-item:disabled {
+      opacity: 0.42;
+      cursor: not-allowed;
+      transform: none;
+    }
+
     .pane { display: none; }
     .pane.active { display: block; }
 
@@ -629,7 +636,7 @@
       </div>
 
       <div class="sidebar-footer">
-        建议先使用 <span class="kbd">文件识别</span> 验证服务；需要 Qwen-ASR 时把引擎切到 <span class="kbd">Qwen-ASR</span>。
+        建议先使用 <span class="kbd">文件识别</span> 验证服务；需要 sherpa-onnx 快速整段识别时切换引擎。
       </div>
     </aside>
 
@@ -637,7 +644,7 @@
       <header class="topbar">
         <div class="page-title">
           <h1>语音识别测试台</h1>
-          <p>在浏览器里直接调试 FunASR / Qwen-ASR 的文件流、先上传再识别、完整 Base64、实时 Base64 分片流。</p>
+          <p>在浏览器里直接调试 FunASR / Qwen-ASR / sherpa-onnx 的文件识别、完整 Base64 和流式链路。</p>
         </div>
         <div class="top-actions">
           <button id="healthBtn" class="btn secondary" type="button">刷新状态</button>
@@ -681,7 +688,9 @@
                 <select id="asrEngine">
                   <option value="funasr">FunASR 本地实时识别</option>
                   <option value="qwen">Qwen-ASR 整段识别</option>
+                  <option value="sherpa">sherpa-onnx 快速整段识别</option>
                 </select>
+                <p class="helper">sherpa-onnx 当前支持完整文件和 Base64 整段测试，不支持流式会话和诊断链路。</p>
               </div>
             </div>
             <div class="mode-switch">
@@ -693,7 +702,7 @@
             </div>
 
             <section id="filePane" class="pane active">
-              <div class="callout">上传完整音频文件，直接消费 SSE 返回。FunASR 调用 <strong>POST /asr/file-sse</strong>，Qwen-ASR 调用 <strong>POST /qwen-asr/file-sse</strong>。</div>
+              <div class="callout">上传完整音频文件，直接消费 SSE 返回。FunASR 调用 <strong>POST /asr/file-sse</strong>，Qwen-ASR 调用 <strong>POST /qwen-asr/file-sse</strong>，sherpa-onnx 调用 <strong>POST /sherpa-onnx/file-sse</strong>。</div>
               <div class="form-grid">
                 <div class="field full">
                   <label for="fileInput">音频文件</label>
@@ -757,7 +766,7 @@ Qwen-ASR: POST /qwen-asr/upload-wav -> POST /qwen-asr/uploaded-file-session/{aud
             </section>
 
             <section id="base64Pane" class="pane">
-              <div class="callout">页面会把文件转成 Base64 后用 JSON 提交。FunASR 调用 <strong>POST /asr/base64-sse</strong>，Qwen-ASR 调用 <strong>POST /qwen-asr/base64-sse</strong>。</div>
+              <div class="callout">页面会把文件转成 Base64 后用 JSON 提交。FunASR 调用 <strong>POST /asr/base64-sse</strong>，Qwen-ASR 调用 <strong>POST /qwen-asr/base64-sse</strong>，sherpa-onnx 调用 <strong>POST /sherpa-onnx/base64-sse</strong>。</div>
               <div class="form-grid">
                 <div class="field full">
                   <label for="base64File">音频文件</label>
@@ -1065,12 +1074,46 @@ chunk-b64 请求体：
       return document.querySelector(`#${id}`)?.value || fallback;
     }
 
+    function currentEngine() {
+      return formValue('asrEngine', 'funasr');
+    }
+
     function currentEnginePrefix() {
-      return formValue('asrEngine', 'funasr') === 'qwen' ? '/qwen-asr' : '/asr';
+      const engine = currentEngine();
+      if (engine === 'qwen') return '/qwen-asr';
+      if (engine === 'sherpa') return '/sherpa-onnx';
+      return '/asr';
     }
 
     function currentSsePath(sessionId) {
       return `${currentEnginePrefix()}/sse/${sessionId}`;
+    }
+
+    function isSherpaEngine() {
+      return currentEngine() === 'sherpa';
+    }
+
+    function sherpaSupportsPane(paneId) {
+      return paneId === 'filePane' || paneId === 'base64Pane';
+    }
+
+    function ensureCurrentEngineSupports(paneId) {
+      if (!isSherpaEngine() || sherpaSupportsPane(paneId)) return true;
+      addEvent('error', 'sherpa-onnx 当前只支持文件识别和完整 Base64 测试');
+      showPane('filePane');
+      return false;
+    }
+
+    function syncEngineCapabilities() {
+      const sherpa = isSherpaEngine();
+      document.querySelectorAll('.nav-item[data-pane], .mode-btn').forEach((item) => {
+        item.disabled = sherpa && !sherpaSupportsPane(item.dataset.pane);
+      });
+      const activePane = document.querySelector('.pane.active')?.id || 'filePane';
+      if (sherpa && !sherpaSupportsPane(activePane)) {
+        showPane('filePane');
+        addEvent('log', '已切换到 sherpa-onnx 支持的文件识别入口');
+      }
     }
 
     function appendCommonForm(form, prefix) {
@@ -1135,6 +1178,7 @@ chunk-b64 请求体：
     }
 
     async function runUploadedFileStream() {
+      if (!ensureCurrentEngineSupports('uploadStreamPane')) return;
       const file = document.querySelector('#uploadStreamFile').files[0];
       if (!file) return addEvent('error', '请先选择 WAV 文件');
       clearEvents(`分步 WAV 流式识别开始：${file.name}`);
@@ -1194,6 +1238,7 @@ chunk-b64 请求体：
     }
 
     async function createSession() {
+      if (!ensureCurrentEngineSupports('streamPane')) throw new Error('当前引擎不支持实时分片流');
       const form = new FormData();
       form.append('mode', formValue('streamMode', 'online'));
       form.append('audio_fs', '16000');
@@ -1248,6 +1293,7 @@ chunk-b64 请求体：
     }
 
     async function runStreamSimulation() {
+      if (!ensureCurrentEngineSupports('streamPane')) return;
       const file = document.querySelector('#streamFile').files[0];
       if (!file) return addEvent('error', '请先选择音频文件');
       clearEvents(`实时分片模拟开始：${file.name}`);
@@ -1286,6 +1332,7 @@ chunk-b64 请求体：
     }
 
     async function runDiagnostic() {
+      if (!ensureCurrentEngineSupports('diagnosticPane')) return;
       const file = document.querySelector('#diagnosticFile').files[0];
       if (!file) return addEvent('error', '请先选择诊断音频文件');
       clearEvents(`一键诊断开始：${file.name}`);
@@ -1310,6 +1357,10 @@ chunk-b64 请求体：
     }
 
     function showPane(paneId) {
+      if (isSherpaEngine() && !sherpaSupportsPane(paneId)) {
+        addEvent('error', 'sherpa-onnx 当前只支持文件识别和完整 Base64 测试');
+        paneId = 'filePane';
+      }
       document.querySelectorAll('.pane').forEach((pane) => pane.classList.toggle('active', pane.id === paneId));
       document.querySelectorAll('.nav-item[data-pane], .mode-btn').forEach((item) => {
         item.classList.toggle('active', item.dataset.pane === paneId);
@@ -1334,11 +1385,13 @@ chunk-b64 请求体：
     els.base64Run.addEventListener('click', runBase64Sse);
     els.streamRun.addEventListener('click', runStreamSimulation);
     els.diagnosticRun.addEventListener('click', runDiagnostic);
+    document.querySelector('#asrEngine').addEventListener('change', syncEngineCapabilities);
     els.streamStop.addEventListener('click', async () => {
       try { await endCurrentSession(); } catch (error) { addEvent('error', error.message); }
     });
 
     clearEvents('控制台已就绪，请选择左侧功能开始测试。');
+    syncEngineCapabilities();
     checkHealth();
   </script>
 </body>

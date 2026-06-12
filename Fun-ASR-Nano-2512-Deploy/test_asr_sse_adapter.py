@@ -147,6 +147,16 @@ class DecodeAudioBase64Test(unittest.TestCase):
         self.assertIn("/sherpa-onnx/file-sse", paths)
         self.assertIn("/sherpa-onnx/base64-sse", paths)
 
+    def test_frontend_exposes_sherpa_onnx_test_entry(self):
+        static_index = os.path.join(os.path.dirname(__file__), "static", "index.html")
+
+        with open(static_index, encoding="utf-8") as index_file:
+            html = index_file.read()
+
+        self.assertIn('<option value="sherpa">sherpa-onnx 快速整段识别</option>', html)
+        self.assertIn("POST /sherpa-onnx/file-sse", html)
+        self.assertIn("POST /sherpa-onnx/base64-sse", html)
+
     def test_normalizes_diagnostic_modes(self):
         self.assertEqual(["online", "2pass"], normalize_diagnostic_modes("online, 2pass"))
 
