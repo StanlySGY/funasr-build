@@ -345,12 +345,12 @@ curl http://127.0.0.1:10097/health
 
 ### 文件级 SSE 测试
 
-该接口适合先用 `curl` 验证 SSE 输出格式。
+该接口适合先用 `curl` 验证 SSE 输出格式。完整文件默认走快速发送模式，不再按真实播放速度逐帧喂给后端。
 
 ```bash
 curl -N -X POST "http://127.0.0.1:10097/asr/file-sse" \
   -F "file=@example.wav" \
-  -F "mode=2pass"
+  -F "mode=online"
 ```
 
 正常会看到类似：
@@ -366,6 +366,15 @@ event: done
 data: {}
 ```
 
+如果需要模拟实时流式输入，再显式加 `realtime=true`：
+
+```bash
+curl -N -X POST "http://127.0.0.1:10097/asr/file-sse" \
+  -F "file=@example.wav" \
+  -F "mode=online" \
+  -F "realtime=true"
+```
+
 ### Base64 文件级 SSE 测试
 
 该接口适合调用方只能传 JSON 的场景。`audio_base64` 支持普通 base64 字符串，也支持 `data:audio/wav;base64,...` 形式。
@@ -375,7 +384,7 @@ AUDIO_B64=$(base64 -w 0 example.wav)
 
 curl -N -X POST "http://127.0.0.1:10097/asr/base64-sse" \
   -H "Content-Type: application/json" \
-  -d "$(jq -n --arg audio "$AUDIO_B64" '{audio_base64:$audio, filename:"example.wav", mode:"2pass", audio_fs:16000}')"
+  -d "$(jq -n --arg audio "$AUDIO_B64" '{audio_base64:$audio, filename:"example.wav", mode:"online", audio_fs:16000}')"
 ```
 
 请求体字段：

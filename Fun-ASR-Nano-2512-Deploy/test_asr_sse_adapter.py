@@ -16,6 +16,7 @@ from asr_sse_adapter import (
     MAX_AUDIO_BYTES,
     append_diagnostic_log,
     app,
+    build_audio_sse_response,
     cleanup_idle_resources,
     connect_backend,
     create_session,
@@ -280,6 +281,110 @@ class DecodeAudioBase64Test(unittest.TestCase):
         self.assertIn('"text": "你好"', body)
         self.assertIn('"provider": "qwen-asr"', body)
         self.assertIn("event: done", body)
+
+    def test_complete_file_sse_defaults_to_fast_single_batch_without_realtime_sleep(self):
+        async def run_case():
+            websocket = FakeWebSocket()
+            end_sent = asyncio.Event()
+            sleep_calls = []
+
+            async def fake_send(data):
+                websocket.sent.append(data)
+                if isinstance(data, str) and '"is_speaking": false' in data:
+                    end_sent.set()
+
+            websocket.send = fake_send
+
+            async def fake_connect_backend():
+                return websocket
+
+            async def fake_receive_to_queue(ws, queue):
+                await end_sent.wait()
+                await queue.put(("online", {"mode": "online", "text": "ok"}))
+
+            async def fake_sleep(delay):
+                sleep_calls.append(delay)
+
+            wav_payload = build_wav_bytes(16000, 1, 2, b"\x00\x00" * 3000)
+            with patch("asr_sse_adapter.connect_backend", fake_connect_backend), \
+                 patch("asr_sse_adapter.receive_to_queue", fake_receive_to_queue), \
+                 patch("asr_sse_adapter.asyncio.sleep", fake_sleep), \
+                 patch("asr_sse_adapter.ONLINE_RESULT_WAIT_SEC", 0):
+                response = build_audio_sse_response(
+                    raw=wav_payload,
+                    filename="input.wav",
+                    mode="online",
+                    audio_fs=16000,
+                    chunk_size="5,10,5",
+                    chunk_interval=10,
+                    encoder_chunk_look_back=4,
+                    decoder_chunk_look_back=0,
+                    hotwords="",
+                )
+                chunks = []
+                async for chunk in response.body_iterator:
+                    chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk)
+            return websocket.sent, sleep_calls, "".join(chunks)
+
+        sent, sleep_calls, body = asyncio.run(run_case())
+        binary_chunks = [item for item in sent if isinstance(item, bytes)]
+
+        self.assertEqual(1, len(binary_chunks))
+        self.assertEqual(b"\x00\x00" * 3000, binary_chunks[0])
+        self.assertEqual([], sleep_calls)
+        self.assertIn('"chunk_interval": 1', sent[0])
+        self.assertIn("event: online", body)
+        self.assertIn("event: done", body)
+
+    def test_complete_file_sse_can_keep_realtime_pacing_when_requested(self):
+        async def run_case():
+            websocket = FakeWebSocket()
+            end_sent = asyncio.Event()
+            sleep_calls = []
+
+            async def fake_send(data):
+                websocket.sent.append(data)
+                if isinstance(data, str) and '"is_speaking": false' in data:
+                    end_sent.set()
+
+            websocket.send = fake_send
+
+            async def fake_connect_backend():
+                return websocket
+
+            async def fake_receive_to_queue(ws, queue):
+                await end_sent.wait()
+                await queue.put(("done", {}))
+
+            async def fake_sleep(delay):
+                sleep_calls.append(delay)
+
+            wav_payload = build_wav_bytes(16000, 1, 2, b"\x00\x00" * 3000)
+            with patch("asr_sse_adapter.connect_backend", fake_connect_backend), \
+                 patch("asr_sse_adapter.receive_to_queue", fake_receive_to_queue), \
+                 patch("asr_sse_adapter.asyncio.sleep", fake_sleep):
+                response = build_audio_sse_response(
+                    raw=wav_payload,
+                    filename="input.wav",
+                    mode="online",
+                    audio_fs=16000,
+                    chunk_size="5,10,5",
+                    chunk_interval=10,
+                    encoder_chunk_look_back=4,
+                    decoder_chunk_look_back=0,
+                    hotwords="",
+                    realtime=True,
+                )
+                async for _ in response.body_iterator:
+                    pass
+            return websocket.sent, sleep_calls
+
+        sent, sleep_calls = asyncio.run(run_case())
+        binary_chunks = [item for item in sent if isinstance(item, bytes)]
+
+        self.assertGreater(len(binary_chunks), 1)
+        self.assertGreater(len(sleep_calls), 0)
+        self.assertIn('"chunk_interval": 10', sent[0])
 
     def test_qwen_chunk_session_runs_transcription_on_end(self):
         async def run_case():
