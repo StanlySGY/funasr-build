@@ -29,7 +29,13 @@ TARGET_SAMPLE_RATE = int(os.environ.get("FUNASR_TARGET_SAMPLE_RATE", "16000"))
 DEFAULT_CHUNK_SIZE = [5, 10, 5]
 DEFAULT_CHUNK_INTERVAL = 10
 FAST_FILE_CHUNK_INTERVAL = int(os.environ.get("FUNASR_FILE_FAST_CHUNK_INTERVAL", "10"))
-FAST_FILE_CHUNK_MULTIPLIER = max(1, int(os.environ.get("FUNASR_FILE_FAST_CHUNK_MULTIPLIER", "10")))
+FAST_FILE_CHUNK_MULTIPLIER = max(1, int(os.environ.get("FUNASR_FILE_FAST_CHUNK_MULTIPLIER", "1")))
+FAST_FILE_DEFER_ONLINE_UNTIL_END = os.environ.get("FUNASR_FILE_DEFER_ONLINE_UNTIL_END", "0").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 BACKEND_CONNECT_EXCEPTIONS = (OSError, EOFError, InvalidHandshake, InvalidMessage)
 DIAGNOSTIC_LOG_PATH = os.environ.get(
     "FUNASR_DIAGNOSTIC_LOG",
@@ -770,6 +776,8 @@ def build_audio_sse_response(
     if fast_file_online:
         backend_chunk_interval = max(1, FAST_FILE_CHUNK_INTERVAL)
         send_stride = stride * FAST_FILE_CHUNK_MULTIPLIER
+    defer_online_until_end = fast_file_online and FAST_FILE_DEFER_ONLINE_UNTIL_END
+    skip_final_online_flush = fast_file_online and not defer_online_until_end
 
     async def events():
         queue: asyncio.Queue = asyncio.Queue()
@@ -786,7 +794,8 @@ def build_audio_sse_response(
                         encoder_chunk_look_back=encoder_chunk_look_back,
                         decoder_chunk_look_back=decoder_chunk_look_back,
                         hotwords=hotwords,
-                        defer_online_until_end=fast_file_online,
+                        skip_final_online_flush=skip_final_online_flush,
+                        defer_online_until_end=defer_online_until_end,
                     )
                 )
                 recv_task = asyncio.create_task(receive_to_queue(ws, queue))
@@ -824,6 +833,14 @@ def build_audio_sse_response(
                     if event in {"online", "final", "message"}:
                         received_result = True
                     if end_sent.is_set() and is_backend_close_without_frame(event, data):
+                        if not received_result:
+                            yield sse_event(
+                                "error",
+                                {
+                                    "message": "backend closed before ASR result",
+                                    "backend_message": data.get("message", ""),
+                                },
+                            )
                         break
                     yield sse_event(event, data)
                     if event == "done":

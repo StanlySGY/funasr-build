@@ -331,12 +331,12 @@ class DecodeAudioBase64Test(unittest.TestCase):
         sent, sleep_calls, body = asyncio.run(run_case())
         binary_chunks = [item for item in sent if isinstance(item, bytes)]
 
-        self.assertEqual(1, len(binary_chunks))
+        self.assertGreater(len(binary_chunks), 1)
         self.assertEqual(b"\x00\x00" * 3000, b"".join(binary_chunks))
         self.assertEqual([], sleep_calls)
         self.assertIn('"chunk_interval": 10', sent[0])
-        self.assertIn('"defer_online_until_end": true', sent[0])
-        self.assertNotIn("skip_final_online_flush", sent[0])
+        self.assertIn('"skip_final_online_flush": true', sent[0])
+        self.assertNotIn("defer_online_until_end", sent[0])
         self.assertIn("event: online", body)
         self.assertIn("event: done", body)
 
@@ -392,7 +392,7 @@ class DecodeAudioBase64Test(unittest.TestCase):
         self.assertNotIn("skip_final_online_flush", sent[0])
         self.assertNotIn("defer_online_until_end", sent[0])
 
-    def test_complete_file_sse_suppresses_backend_close_without_frame_after_end(self):
+    def test_complete_file_sse_suppresses_backend_close_without_frame_after_result(self):
         async def run_case():
             websocket = FakeWebSocket()
             end_sent = asyncio.Event()
@@ -409,6 +409,7 @@ class DecodeAudioBase64Test(unittest.TestCase):
 
             async def fake_receive_to_queue(ws, queue):
                 await end_sent.wait()
+                await queue.put(("online", {"mode": "online", "text": "ok"}))
                 await queue.put(("error", {"message": "no close frame received or sent"}))
                 await queue.put(("done", {}))
 
@@ -435,6 +436,51 @@ class DecodeAudioBase64Test(unittest.TestCase):
 
         self.assertNotIn("event: error", body)
         self.assertNotIn("no close frame", body)
+        self.assertIn("event: online", body)
+        self.assertIn("event: done", body)
+
+    def test_complete_file_sse_reports_backend_close_without_frame_before_result(self):
+        async def run_case():
+            websocket = FakeWebSocket()
+            end_sent = asyncio.Event()
+
+            async def fake_send(data):
+                websocket.sent.append(data)
+                if isinstance(data, str) and '"is_speaking": false' in data:
+                    end_sent.set()
+
+            websocket.send = fake_send
+
+            async def fake_connect_backend():
+                return websocket
+
+            async def fake_receive_to_queue(ws, queue):
+                await end_sent.wait()
+                await queue.put(("error", {"message": "no close frame received or sent"}))
+
+            wav_payload = build_wav_bytes(16000, 1, 2, b"\x00\x00" * 3000)
+            with patch("asr_sse_adapter.connect_backend", fake_connect_backend), \
+                 patch("asr_sse_adapter.receive_to_queue", fake_receive_to_queue):
+                response = build_audio_sse_response(
+                    raw=wav_payload,
+                    filename="input.wav",
+                    mode="online",
+                    audio_fs=16000,
+                    chunk_size="5,10,5",
+                    chunk_interval=10,
+                    encoder_chunk_look_back=4,
+                    decoder_chunk_look_back=0,
+                    hotwords="",
+                )
+                chunks = []
+                async for chunk in response.body_iterator:
+                    chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        body = asyncio.run(run_case())
+
+        self.assertIn("event: error", body)
+        self.assertIn("backend closed before ASR result", body)
         self.assertIn("event: done", body)
 
     def test_event_name_maps_backend_done_marker_to_done_event(self):
