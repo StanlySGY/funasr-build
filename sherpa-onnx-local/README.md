@@ -19,6 +19,33 @@ tokens.txt
 mkdir -p /data/maas/sgy_arm/sherpa-onnx-models
 ```
 
+可直接使用仓库里的下载脚本：
+
+```bash
+bash sherpa-onnx-local/download_model.sh
+```
+
+脚本默认下载：
+
+```text
+https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-paraformer-zh-2023-09-14.tar.bz2
+```
+
+并把文件整理到：
+
+```text
+/data/maas/sgy_arm/sherpa-onnx-models/model.int8.onnx
+/data/maas/sgy_arm/sherpa-onnx-models/tokens.txt
+```
+
+如需换模型：
+
+```bash
+SHERPA_ONNX_MODEL_URL="https://example.com/your-model.tar.bz2" \
+SHERPA_ONNX_MODEL_DIR="/data/maas/sgy_arm/sherpa-onnx-models" \
+bash sherpa-onnx-local/download_model.sh
+```
+
 如果你的文件名不是 `model.int8.onnx` / `tokens.txt`，可以在 `docker-compose.sherpa-onnx.yml` 里显式设置：
 
 ```yaml
@@ -41,6 +68,7 @@ mkdir -p /data/maas/sgy_arm/sherpa-onnx-models
 在仓库根目录执行：
 
 ```bash
+bash sherpa-onnx-local/download_model.sh
 docker compose -f docker-compose.sherpa-onnx.yml up -d --build
 curl -s http://127.0.0.1:10110/health
 ```
