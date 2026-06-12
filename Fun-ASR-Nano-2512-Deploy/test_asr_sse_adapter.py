@@ -40,6 +40,7 @@ from asr_sse_adapter import (
     uploaded_audios,
     UploadedAudio,
     QwenSession,
+    event_name,
 )
 
 
@@ -282,7 +283,7 @@ class DecodeAudioBase64Test(unittest.TestCase):
         self.assertIn('"provider": "qwen-asr"', body)
         self.assertIn("event: done", body)
 
-    def test_complete_file_sse_defaults_to_fast_single_batch_without_realtime_sleep(self):
+    def test_complete_file_sse_defaults_to_fast_chunk_burst_without_realtime_sleep(self):
         async def run_case():
             websocket = FakeWebSocket()
             end_sent = asyncio.Event()
@@ -301,6 +302,7 @@ class DecodeAudioBase64Test(unittest.TestCase):
             async def fake_receive_to_queue(ws, queue):
                 await end_sent.wait()
                 await queue.put(("online", {"mode": "online", "text": "ok"}))
+                await queue.put(("done", {}))
 
             async def fake_sleep(delay):
                 sleep_calls.append(delay)
@@ -329,10 +331,10 @@ class DecodeAudioBase64Test(unittest.TestCase):
         sent, sleep_calls, body = asyncio.run(run_case())
         binary_chunks = [item for item in sent if isinstance(item, bytes)]
 
-        self.assertEqual(1, len(binary_chunks))
-        self.assertEqual(b"\x00\x00" * 3000, binary_chunks[0])
+        self.assertGreater(len(binary_chunks), 1)
+        self.assertEqual(b"\x00\x00" * 3000, b"".join(binary_chunks))
         self.assertEqual([], sleep_calls)
-        self.assertIn('"chunk_interval": 2', sent[0])
+        self.assertIn('"chunk_interval": 20', sent[0])
         self.assertIn("event: online", body)
         self.assertIn("event: done", body)
 
@@ -430,6 +432,10 @@ class DecodeAudioBase64Test(unittest.TestCase):
         self.assertNotIn("event: error", body)
         self.assertNotIn("no close frame", body)
         self.assertIn("event: done", body)
+
+    def test_event_name_maps_backend_done_marker_to_done_event(self):
+        self.assertEqual("done", event_name({"event": "done", "is_final": True}))
+        self.assertEqual("done", event_name({"mode": "done", "is_final": True}))
 
     def test_qwen_chunk_session_runs_transcription_on_end(self):
         async def run_case():

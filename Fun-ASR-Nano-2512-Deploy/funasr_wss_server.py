@@ -610,6 +610,10 @@ async def ws_serve(websocket, path=None):
                         websocket.vad_pre_idx = 0
                         frames = []
                         websocket.status_dict_vad["cache"] = {}
+                        try:
+                            await websocket.send(json.dumps({"event": "done", "wav_name": websocket.wav_name}))
+                        except Exception as e:
+                            print(f"Client disconnected during done send: {e}", flush=True)
                     else:
                         # 保留少量上下文
                         frames = frames[-20:]

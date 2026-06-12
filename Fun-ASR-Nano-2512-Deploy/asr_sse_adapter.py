@@ -28,6 +28,7 @@ DEFAULT_BACKEND_CONNECT_DELAY = float(os.environ.get("FUNASR_BACKEND_CONNECT_DEL
 TARGET_SAMPLE_RATE = int(os.environ.get("FUNASR_TARGET_SAMPLE_RATE", "16000"))
 DEFAULT_CHUNK_SIZE = [5, 10, 5]
 DEFAULT_CHUNK_INTERVAL = 10
+FAST_FILE_CHUNK_INTERVAL = int(os.environ.get("FUNASR_FILE_FAST_CHUNK_INTERVAL", "20"))
 BACKEND_CONNECT_EXCEPTIONS = (OSError, EOFError, InvalidHandshake, InvalidMessage)
 DIAGNOSTIC_LOG_PATH = os.environ.get(
     "FUNASR_DIAGNOSTIC_LOG",
@@ -434,6 +435,8 @@ def sse_event(event: str, data: dict) -> str:
 
 
 def event_name(message: dict) -> str:
+    if message.get("event") == "done" or message.get("mode") == "done":
+        return "done"
     mode = message.get("mode", "")
     if mode in {"2pass-online", "online"}:
         return "online"
@@ -758,7 +761,7 @@ def build_audio_sse_response(
     wav_name = filename or "upload"
     backend_chunk_interval = chunk_interval
     if not realtime and mode == "online":
-        backend_chunk_interval = 2
+        backend_chunk_interval = max(1, FAST_FILE_CHUNK_INTERVAL)
 
     async def events():
         queue: asyncio.Queue = asyncio.Queue()
@@ -782,7 +785,8 @@ def build_audio_sse_response(
                 async def send_audio():
                     try:
                         if not realtime:
-                            await ws.send(audio_bytes)
+                            for start in range(0, len(audio_bytes), stride):
+                                await ws.send(audio_bytes[start : start + stride])
                             await ws.send(json.dumps({"is_speaking": False}))
                             return
                         sleep_sec = 60 * chunks[1] / chunk_interval / 1000
@@ -815,8 +819,6 @@ def build_audio_sse_response(
                     yield sse_event(event, data)
                     if event == "done":
                         should_emit_done = False
-                        break
-                    if not realtime and end_sent.is_set() and event in {"online", "final"}:
                         break
                     if end_sent.is_set() and event in {"error", "final"}:
                         break
